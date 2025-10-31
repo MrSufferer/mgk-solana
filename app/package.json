@@ -1,0 +1,28 @@
+{
+  "name": "arcium-perpetuals-cli",
+  "version": "1.0.0",
+  "description": "CLI for managing Arcium Perpetuals DEX",
+  "main": "src/cli.ts",
+  "scripts": {
+    "cli": "ts-node src/cli.ts"
+  },
+  "keywords": [
+    "solana",
+    "perpetuals",
+    "arcium",
+    "cli"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.30.0",
+    "@solana/spl-token": "^0.4.0",
+    "@solana/web3.js": "^1.87.0",
+    "commander": "^11.1.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.0"
+  }
+}
