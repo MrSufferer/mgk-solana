@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
-use anchor_spl::token::Token;
+use anchor_spl::token::{Token, Mint};
 
 pub mod state;
 pub use state::*;
@@ -3876,12 +3876,19 @@ pub struct AddLiquidity<'info> {
     pub custody: Account<'info, Custody>,
     /// CHECK: Custody token account
     pub custody_token_account: AccountInfo<'info>,
-    /// CHECK: LP token mint
-    pub lp_token_mint: AccountInfo<'info>,
+    /// LP token mint - must be initialized
+    #[account(
+        mut,
+        seeds = [b"lp_token_mint", pool.key().as_ref()],
+        bump = pool.lp_token_bump
+    )]
+    pub lp_token_mint: Account<'info, Mint>,
     /// CHECK: Funding account
     pub funding_account: AccountInfo<'info>,
     /// CHECK: LP token account
+    #[account(mut)]
     pub lp_token_account: AccountInfo<'info>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -3962,12 +3969,17 @@ pub struct AddPool<'info> {
         bump
     )]
     pub pool: Account<'info, Pool>,
-    /// CHECK: LP token mint PDA
+    /// LP token mint PDA - initialized automatically if needed
     #[account(
+        init_if_needed,
+        payer = admin,
+        mint::authority = transfer_authority,
+        mint::freeze_authority = transfer_authority,
+        mint::decimals = 6,
         seeds = [b"lp_token_mint", pool.key().as_ref()],
         bump
     )]
-    pub lp_token_mint: AccountInfo<'info>,
+    pub lp_token_mint: Account<'info, Mint>,
     pub system_program: Program<'info, System>,
     /// CHECK: Token program
     pub token_program: AccountInfo<'info>,
