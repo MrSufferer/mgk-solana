@@ -102,7 +102,7 @@ export class ViewHelper {
   }
 
   getAssetsUnderManagement = async (pool: PoolAccount): Promise<BN> => {
-    let program = new Program(IDL, PERPETUALS_PROGRAM_ID, this.provider);
+    let program = new Program(IDL, this.provider);
 
     const transaction = await program.methods
       // @ts-ignore
@@ -129,7 +129,7 @@ export class ViewHelper {
     pool: PoolAccount,
     custody: CustodyAccount
   ): Promise<PriceAndFee> => {
-    let program = new Program(IDL, PERPETUALS_PROGRAM_ID, this.provider);
+    let program = new Program(IDL, this.provider);
 
     let collateral = new BN(payAmount * 10 ** custody.decimals);
     let size = new BN(positionAmount * 10 ** custody.decimals);
@@ -166,7 +166,7 @@ export class ViewHelper {
   };
 
   getExitPriceAndFee = async (position: PublicKey): Promise<PriceAndFee> => {
-    let program = new Program(IDL, PERPETUALS_PROGRAM_ID, this.provider);
+    let program = new Program(IDL, this.provider);
     // console.log("fee payer : ", DEFAULT_PERPS_USER.publicKey.toBase58());
 
     const transaction = await program.methods
@@ -199,7 +199,7 @@ export class ViewHelper {
     addCollat?: number,
     removeCollat?: number
   ): Promise<BN> => {
-    let program = new Program(IDL, PERPETUALS_PROGRAM_ID, this.provider);
+    let program = new Program(IDL, this.provider);
 
     let addCollateral = addCollat
       ? new BN(addCollat * 10 ** custody.decimals)
@@ -243,7 +243,7 @@ export class ViewHelper {
   };
 
   getLiquidationState = async (position: PositionAccount): Promise<BN> => {
-    let program = new Program(IDL, PERPETUALS_PROGRAM_ID, this.provider);
+    let program = new Program(IDL, this.provider);
 
     const transaction = await program.methods
       // @ts-ignore
@@ -292,7 +292,7 @@ export class ViewHelper {
     receivingCustody: CustodyAccount,
     dispensingCustody: CustodyAccount
   ): Promise<SwapAmountAndFees> => {
-    let program = new Program(IDL, PERPETUALS_PROGRAM_ID, this.provider);
+    let program = new Program(IDL, this.provider);
     let amountIn = new BN(amtIn * 10 ** receivingCustody.decimals);
 
     // console.log("amount in", Number(amountIn));
@@ -330,7 +330,7 @@ export class ViewHelper {
     pool: PoolAccount,
     custody: CustodyAccount
   ): Promise<AddLiquidityAmountAndFees> => {
-    let program = new Program(IDL, PERPETUALS_PROGRAM_ID, this.provider);
+    let program = new Program(IDL, this.provider);
     let amountIn = new BN(amtIn * 10 ** custody.decimals);
     let transaction = await program.methods
       .getAddLiquidityAmountAndFee({
@@ -363,7 +363,7 @@ export class ViewHelper {
     pool: PoolAccount,
     custody: CustodyAccount
   ): Promise<RemoveLiquidityAmountAndFees> => {
-    let program = new Program(IDL, PERPETUALS_PROGRAM_ID, this.provider);
+    let program = new Program(IDL, this.provider);
 
     let lpAmountIn = new BN(lpIn * 10 ** pool.lpData.decimals);
 

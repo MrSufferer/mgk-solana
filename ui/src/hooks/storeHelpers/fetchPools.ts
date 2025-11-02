@@ -24,6 +24,14 @@ export async function getPoolData(
     Object.values(fetchedPools)
       .sort((a, b) => a.account.name.localeCompare(b.account.name))
       .map(async (pool: FetchPool, idx: number) => {
+        // Skip pools at indices 0 and 1 (DevPool and DevPool1)
+        if (idx < 2) {
+          console.warn(
+            `Skipping pool ${pool.account.name} at index ${idx} (only processing from index 2 onwards)`
+          );
+          return;
+        }
+
         const lpTokenMint = PublicKey.findProgramAddressSync(
           [Buffer.from("lp_token_mint"), pool.publicKey.toBuffer()],
           perpetual_program.programId
@@ -53,27 +61,47 @@ export async function getPoolData(
           inceptionTime: pool.account.inceptionTime,
         };
 
-        poolObjs[pool.publicKey.toString()] = new PoolAccount(
+        const poolAccount = new PoolAccount(
           poolData,
           custodyInfos,
           pool.publicKey,
           lpData,
           idx
         );
+        poolObjs[pool.publicKey.toString()] = poolAccount;
+        
+        // Try to fetch AUM with retry limit to avoid infinite loops on rate limits
         let fetchedAum;
+        const maxRetries = 3;
+        let retryCount = 0;
+        let success = false;
 
-        let loopStatus = true;
-
-        while (loopStatus) {
+        while (retryCount < maxRetries && !success) {
           try {
-            fetchedAum = await View.getAssetsUnderManagement(
-              poolObjs[pool.publicKey.toString()]
-            );
-            loopStatus = false;
-          } catch (error) {}
+            fetchedAum = await View.getAssetsUnderManagement(poolAccount);
+            success = true;
+          } catch (error) {
+            retryCount++;
+            if (retryCount < maxRetries) {
+              // Exponential backoff: 500ms, 1000ms, 2000ms
+              const delay = 500 * Math.pow(2, retryCount - 1);
+              console.warn(
+                `Failed to fetch AUM for pool ${pool.account.name}, retrying in ${delay}ms (${retryCount}/${maxRetries})...`
+              );
+              await new Promise((resolve) => setTimeout(resolve, delay));
+            } else {
+              console.warn(
+                `Failed to fetch AUM for pool ${pool.account.name} after ${maxRetries} retries, using pool account AUM value`
+              );
+              // Use the AUM value from the pool account data as fallback
+              fetchedAum = poolData.aumUsd;
+            }
+          }
         }
 
-        poolObjs[pool.publicKey.toString()].setAum(fetchedAum);
+        if (fetchedAum) {
+          poolAccount.setAum(fetchedAum);
+        }
       })
   );
 
