@@ -3,6 +3,7 @@
 
 import { BN } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
+import { getAssociatedTokenAddress } from "@solana/spl-token";
 import { PerpetualsClient } from "./client";
 import { Command } from "commander";
 import { resolve } from "path";
@@ -262,6 +263,44 @@ async function getRemoveLiquidityAmountAndFee(
   );
 }
 
+async function addLiquidity(
+  poolName: string,
+  tokenMint: PublicKey,
+  amountIn: BN,
+  minLpAmountOut: BN,
+  fundingAccount: PublicKey,
+  lpTokenAccount: PublicKey
+): Promise<void> {
+  const signature = await client.addLiquidity(
+    poolName,
+    tokenMint,
+    amountIn,
+    minLpAmountOut,
+    fundingAccount,
+    lpTokenAccount
+  );
+  client.log(`Liquidity added successfully! Signature: ${signature}`);
+}
+
+async function removeLiquidity(
+  poolName: string,
+  tokenMint: PublicKey,
+  lpAmountIn: BN,
+  minAmountOut: BN,
+  lpTokenAccount: PublicKey,
+  receivingAccount: PublicKey
+): Promise<void> {
+  const signature = await client.removeLiquidity(
+    poolName,
+    tokenMint,
+    lpAmountIn,
+    minAmountOut,
+    lpTokenAccount,
+    receivingAccount
+  );
+  client.log(`Liquidity removed successfully! Signature: ${signature}`);
+}
+
 // CLI Configuration
 const program = new Command();
 
@@ -486,6 +525,136 @@ program
       poolName,
       new PublicKey(tokenMint),
       new BN(lpAmount)
+    );
+  });
+
+program
+  .command("add-liquidity")
+  .description("Add liquidity to a pool")
+  .arguments("<pool-name> <token-mint> <amount-in>")
+  .option("--min-lp-amount-out <amount>", "Minimum LP tokens expected (defaults to 80% of amount-in to account for fees)")
+  .option("--funding-account <pubkey>", "Funding account (token account) - defaults to admin's associated token account")
+  .option("--lp-token-account <pubkey>", "LP token account - defaults to admin's associated LP token account")
+  .action(async (
+    poolName: string,
+    tokenMint: string,
+    amountIn: string,
+    options: { minLpAmountOut?: string; fundingAccount?: string; lpTokenAccount?: string }
+  ) => {
+    ensureClient();
+    
+    const tokenMintKey = new PublicKey(tokenMint);
+    const amountInBN = new BN(amountIn);
+    
+    // Calculate minLpAmountOut if not provided (default to 80% to account for fees)
+    let minLpAmountOutBN: BN;
+    if (options.minLpAmountOut) {
+      minLpAmountOutBN = new BN(options.minLpAmountOut);
+    } else {
+      // Default to 80% of amountIn to account for fees (similar to UI behavior)
+      minLpAmountOutBN = amountInBN.mul(new BN(80)).div(new BN(100));
+      client.log(`Using default minLpAmountOut: ${minLpAmountOutBN.toString()} (80% of amountIn to account for fees)`);
+    }
+    
+    // Optionally calculate and display expected amounts using getAddLiquidityAmountAndFee
+    try {
+      const expectedAmounts = await client.getAddLiquidityAmountAndFee(
+        poolName,
+        tokenMintKey,
+        amountInBN
+      );
+      client.log(`Expected LP amount: ${expectedAmounts.amount.toString()}, Fee: ${expectedAmounts.fee.toString()}`);
+      // Update minLpAmountOut to be slightly less than expected to account for slippage
+      if (!options.minLpAmountOut) {
+        minLpAmountOutBN = expectedAmounts.amount.mul(new BN(95)).div(new BN(100)); // 95% of expected
+        client.log(`Adjusted minLpAmountOut: ${minLpAmountOutBN.toString()} (95% of expected LP amount)`);
+      }
+    } catch (error) {
+      client.log(`Warning: Could not fetch expected amounts: ${error}`);
+    }
+    
+    // Derive accounts if not provided
+    let fundingAccount: PublicKey;
+    let lpTokenAccount: PublicKey;
+    
+    if (options.fundingAccount) {
+      fundingAccount = new PublicKey(options.fundingAccount);
+    } else {
+      fundingAccount = await getAssociatedTokenAddress(
+        tokenMintKey,
+        client.admin.publicKey
+      );
+    }
+    
+    if (options.lpTokenAccount) {
+      lpTokenAccount = new PublicKey(options.lpTokenAccount);
+    } else {
+      const lpTokenMint = await client.getPoolLpTokenKey(poolName);
+      lpTokenAccount = await getAssociatedTokenAddress(
+        lpTokenMint,
+        client.admin.publicKey
+      );
+    }
+    
+    await addLiquidity(
+      poolName,
+      tokenMintKey,
+      amountInBN,
+      minLpAmountOutBN,
+      fundingAccount,
+      lpTokenAccount
+    );
+  });
+
+program
+  .command("remove-liquidity")
+  .description("Remove liquidity from a pool")
+  .arguments("<pool-name> <token-mint> <lp-amount-in> <min-amount-out>")
+  .option("--lp-token-account <pubkey>", "LP token account - defaults to admin's associated LP token account")
+  .option("--receiving-account <pubkey>", "Receiving account (token account) - defaults to admin's associated token account")
+  .action(async (
+    poolName: string,
+    tokenMint: string,
+    lpAmountIn: string,
+    minAmountOut: string,
+    options: { lpTokenAccount?: string; receivingAccount?: string }
+  ) => {
+    ensureClient();
+    
+    const tokenMintKey = new PublicKey(tokenMint);
+    const lpAmountInBN = new BN(lpAmountIn);
+    const minAmountOutBN = new BN(minAmountOut);
+    
+    // Derive accounts if not provided
+    let lpTokenAccount: PublicKey;
+    let receivingAccount: PublicKey;
+    
+    if (options.lpTokenAccount) {
+      lpTokenAccount = new PublicKey(options.lpTokenAccount);
+    } else {
+      const lpTokenMint = await client.getPoolLpTokenKey(poolName);
+      lpTokenAccount = await getAssociatedTokenAddress(
+        lpTokenMint,
+        client.admin.publicKey
+      );
+    }
+    
+    if (options.receivingAccount) {
+      receivingAccount = new PublicKey(options.receivingAccount);
+    } else {
+      receivingAccount = await getAssociatedTokenAddress(
+        tokenMintKey,
+        client.admin.publicKey
+      );
+    }
+    
+    await removeLiquidity(
+      poolName,
+      tokenMintKey,
+      lpAmountInBN,
+      minAmountOutBN,
+      lpTokenAccount,
+      receivingAccount
     );
   });
 

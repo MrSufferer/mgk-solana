@@ -682,4 +682,111 @@ export class PerpetualsClient {
     const custody = await this.getCustody(poolName, tokenMint);
     return new PublicKey(custody.oracle.oracleAccount);
   };
+
+  // Add liquidity to a pool
+  addLiquidity = async (
+    poolName: string,
+    tokenMint: PublicKey,
+    amountIn: BN,
+    minLpAmountOut: BN,
+    fundingAccount: PublicKey,
+    lpTokenAccount: PublicKey
+  ): Promise<string> => {
+    const poolKey = await this.getPoolKey(poolName);
+    const custodyKey = await this.getCustodyKey(poolName, tokenMint);
+    
+    // Check if custody exists before attempting to add liquidity
+    try {
+      await this.getCustody(poolName, tokenMint);
+    } catch (error) {
+      throw new Error(
+        `Custody for token ${tokenMint.toString()} does not exist in pool "${poolName}". ` +
+        `Please add custody first using: add-custody ${poolName} ${tokenMint.toString()} <oracle-account>`
+      );
+    }
+    
+    const custodyTokenAccountKey = await this.getCustodyTokenAccountKey(poolName, tokenMint);
+    const lpTokenMintKey = await this.getPoolLpTokenKey(poolName);
+    const custodyMetas = await this.getCustodyMetas(poolName);
+
+    const signature = await this.program.methods
+      .addLiquidity({
+        amountIn,
+        minLpAmountOut,
+      })
+      .accountsPartial({
+        owner: this.admin.publicKey,
+        fundingAccount,
+        lpTokenAccount,
+        transferAuthority: this.authority.publicKey,
+        perpetuals: this.perpetuals.publicKey,
+        pool: poolKey,
+        custody: custodyKey,
+        custodyTokenAccount: custodyTokenAccountKey,
+        lpTokenMint: lpTokenMintKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .remainingAccounts(custodyMetas)
+      .signers([this.admin])
+      .rpc()
+      .catch((err) => {
+        console.error(err);
+        throw err;
+      });
+
+    return signature;
+  };
+
+  // Remove liquidity from a pool
+  removeLiquidity = async (
+    poolName: string,
+    tokenMint: PublicKey,
+    lpAmountIn: BN,
+    minAmountOut: BN,
+    lpTokenAccount: PublicKey,
+    receivingAccount: PublicKey
+  ): Promise<string> => {
+    const poolKey = await this.getPoolKey(poolName);
+    const custodyKey = await this.getCustodyKey(poolName, tokenMint);
+    
+    // Check if custody exists before attempting to remove liquidity
+    try {
+      await this.getCustody(poolName, tokenMint);
+    } catch (error) {
+      throw new Error(
+        `Custody for token ${tokenMint.toString()} does not exist in pool "${poolName}". ` +
+        `Please add custody first using: add-custody ${poolName} ${tokenMint.toString()} <oracle-account>`
+      );
+    }
+    
+    const custodyTokenAccountKey = await this.getCustodyTokenAccountKey(poolName, tokenMint);
+    const lpTokenMintKey = await this.getPoolLpTokenKey(poolName);
+    const custodyMetas = await this.getCustodyMetas(poolName);
+
+    const signature = await this.program.methods
+      .removeLiquidity({
+        lpAmountIn,
+        minAmountOut,
+      })
+      .accountsPartial({
+        owner: this.admin.publicKey,
+        lpTokenAccount,
+        receivingAccount,
+        transferAuthority: this.authority.publicKey,
+        perpetuals: this.perpetuals.publicKey,
+        pool: poolKey,
+        custody: custodyKey,
+        custodyTokenAccount: custodyTokenAccountKey,
+        lpTokenMint: lpTokenMintKey,
+      })
+      .remainingAccounts(custodyMetas)
+      .signers([this.admin])
+      .rpc()
+      .catch((err) => {
+        console.error(err);
+        throw err;
+      });
+
+    return signature;
+  };
 }
