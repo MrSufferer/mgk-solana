@@ -1,7 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
-import { Blackjack } from "../target/types/blackjack";
+import { Perpetuals } from "../target/types/perpetuals";
 import { randomBytes } from "crypto";
 import {
   awaitComputationFinalization,
@@ -37,7 +37,7 @@ describe("Perpetuals DEX", () => {
 
   // Configure the client to use the local cluster
   anchor.setProvider(anchor.AnchorProvider.env());
-  const program = anchor.workspace.Blackjack as Program<Blackjack>;
+  const program = anchor.workspace.Perpetuals as Program<Perpetuals>;
   const provider = anchor.getProvider() as anchor.AnchorProvider;
 
   type Event = anchor.IdlEvents<(typeof program)["idl"]>;

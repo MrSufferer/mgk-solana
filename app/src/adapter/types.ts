@@ -1,16 +1,7 @@
-/**
- * Type definitions for Perpetuals DEX Adapter
- * 
- * This file defines the interfaces between the original perpetuals UI
- * and our encrypted MPC-based implementation.
- */
 
 import { PublicKey } from "@solana/web3.js";
 import * as anchor from "@coral-xyz/anchor";
 
-// ============================================================================
-// Original Perpetuals Types (what the UI expects)
-// ============================================================================
 
 export interface OriginalPosition {
   owner: PublicKey;
@@ -20,10 +11,10 @@ export interface OriginalPosition {
   openTime: anchor.BN;
   updateTime: anchor.BN;
   side: PositionSide;
-  price: anchor.BN;              // Entry price (public)
-  sizeUsd: anchor.BN;            // Position size in USD (public)
-  borrowSizeUsd: anchor.BN;      // Borrowed amount (public)
-  collateralUsd: anchor.BN;      // Collateral in USD (public)
+  price: anchor.BN;
+  sizeUsd: anchor.BN;
+  borrowSizeUsd: anchor.BN;
+  collateralUsd: anchor.BN;
   unrealizedProfitUsd: anchor.BN;
   unrealizedLossUsd: anchor.BN;
   cumulativeInterestSnapshot: anchor.BN;
@@ -32,29 +23,23 @@ export interface OriginalPosition {
   bump: number;
 }
 
-// ============================================================================
-// Encrypted Position Types (what our program uses)
-// ============================================================================
 
 export interface EncryptedPosition {
   owner: PublicKey;
   positionId: anchor.BN;
   side: PositionSide;
-  sizeUsdEncrypted: number[];        // 32-byte encrypted array
-  collateralUsdEncrypted: number[];  // 32-byte encrypted array
+  sizeUsdEncrypted: number[];
+  collateralUsdEncrypted: number[];
   entryPrice: anchor.BN;
   openTime: anchor.BN;
   updateTime: anchor.BN;
-  ownerEncPubkey: number[];          // 32-byte MPC pubkey
-  sizeNonce: anchor.BN;              // u128 nonce for size
-  collateralNonce: anchor.BN;        // u128 nonce for collateral
+  ownerEncPubkey: number[];
+  sizeNonce: anchor.BN;
+  collateralNonce: anchor.BN;
   liquidator: PublicKey;
   bump: number;
 }
 
-// ============================================================================
-// Position Side Enum
-// ============================================================================
 
 export enum PositionSide {
   None = 0,
@@ -62,86 +47,68 @@ export enum PositionSide {
   Short = 2,
 }
 
-// ============================================================================
-// Trading Parameters
-// ============================================================================
 
 export interface OpenPositionParams {
-  price: anchor.BN;          // Entry price
-  collateral: anchor.BN;     // Collateral amount in USD
-  size: anchor.BN;           // Position size in USD
-  side: PositionSide;        // Long or Short
-  pool?: PublicKey;          // Optional pool override
-  custody?: PublicKey;       // Optional custody override
-  collateralCustody?: PublicKey; // Optional collateral custody override
+  price: anchor.BN;
+  collateral: anchor.BN;
+  size: anchor.BN;
+  side: PositionSide;
+  pool?: PublicKey;
+  custody?: PublicKey;
+  collateralCustody?: PublicKey;
 }
 
 export interface ClosePositionParams {
-  positionKey: PublicKey;    // Position account to close
-  price?: anchor.BN;         // Optional exit price (defaults to oracle)
+  positionKey: PublicKey;
+  price?: anchor.BN;
 }
 
 export interface AddCollateralParams {
-  positionKey: PublicKey;    // Position account
-  collateral: anchor.BN;     // Additional collateral to add
+  positionKey: PublicKey;
+  collateral: anchor.BN;
 }
 
 export interface RemoveCollateralParams {
-  positionKey: PublicKey;    // Position account
-  collateralUsd: anchor.BN;  // Collateral to remove (in USD)
+  positionKey: PublicKey;
+  collateralUsd: anchor.BN;
 }
 
 export interface LiquidateParams {
-  positionKey: PublicKey;    // Position to liquidate
+  positionKey: PublicKey;
 }
 
-// ============================================================================
-// Encryption Context
-// ============================================================================
 
 export interface EncryptionContext {
-  privateKey: Uint8Array;     // x25519 private key (32 bytes)
-  publicKey: Uint8Array;      // x25519 public key (32 bytes)
-  mxePublicKey: Uint8Array;   // MXE (MPC) public key (32 bytes)
-  sharedSecret: Uint8Array;   // Shared secret for encryption (32 bytes)
+  privateKey: Uint8Array;
+  publicKey: Uint8Array;
+  mxePublicKey: Uint8Array;
+  sharedSecret: Uint8Array;
 }
 
-// ============================================================================
-// Adapter Configuration
-// ============================================================================
 
 export interface AdapterConfig {
   program: anchor.Program;
   provider: anchor.AnchorProvider;
-  encryptionContext?: EncryptionContext; // Optional - will be auto-generated if not provided
+  encryptionContext?: EncryptionContext;
   defaultPool?: PublicKey;
   defaultCustody?: PublicKey;
   defaultCollateralCustody?: PublicKey;
 }
 
-// ============================================================================
-// Transaction Result
-// ============================================================================
 
 export interface TransactionResult {
   signature: string;
-  positionKey?: PublicKey;   // For open_position, returns the created position
+  positionKey?: PublicKey;
   success: boolean;
   error?: string;
 }
 
-// ============================================================================
-// Decrypted Position Data
-// ============================================================================
 
 export interface DecryptedPositionData {
   sizeUsd: bigint;
   collateralUsd: bigint;
 }
 
-// ============================================================================
-// View Function Results
-// ============================================================================
 
 export interface EntryPriceAndFee {
   price: anchor.BN;
@@ -169,9 +136,6 @@ export interface LiquidationStateResult {
   liquidationPrice: anchor.BN;
 }
 
-// ============================================================================
-// Swap & Liquidity Parameters
-// ============================================================================
 
 export interface SwapParams {
   amountIn: anchor.BN;
@@ -180,7 +144,7 @@ export interface SwapParams {
   receivingAccount: PublicKey;
   receivingCustodyMint: PublicKey;
   dispensingCustodyMint: PublicKey;
-  poolName?: string;  // Optional pool name (defaults to default pool)
+  poolName?: string;
 }
 
 export interface AddLiquidityParams {
@@ -189,7 +153,7 @@ export interface AddLiquidityParams {
   fundingAccount: PublicKey;
   lpTokenAccount: PublicKey;
   custodyMint: PublicKey;
-  poolName?: string;  // Optional pool name
+  poolName?: string;
 }
 
 export interface RemoveLiquidityParams {
@@ -198,12 +162,9 @@ export interface RemoveLiquidityParams {
   receivingAccount: PublicKey;
   lpTokenAccount: PublicKey;
   custodyMint: PublicKey;
-  poolName?: string;  // Optional pool name
+  poolName?: string;
 }
 
-// ============================================================================
-// Additional View Function Parameters
-// ============================================================================
 
 export interface GetSwapAmountAndFeesParams {
   amountIn: anchor.BN;

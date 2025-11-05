@@ -2,7 +2,7 @@
  * Encryption utilities for Perpetuals DEX Adapter
  * 
  * Uses Arcium's client SDK for encryption/decryption operations.
- * Based on patterns from tests/perpetuals.ts and tests/blackjack.ts
+ * Based on patterns from tests/perpetuals.ts
  */
 
 import { randomBytes } from "crypto";

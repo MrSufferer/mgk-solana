@@ -1,16 +1,3 @@
-/**
- * Perpetuals DEX Adapter
- * 
- * This adapter bridges the gap between the original perpetuals UI
- * (which expects public, transparent data) and our encrypted MPC-based
- * implementation (which uses Arcium for privacy-preserving trading).
- * 
- * Key Features:
- * - Transparent encryption/decryption of position data
- * - Compatible with original perpetuals UI method signatures
- * - Maintains privacy through client-side encryption
- * - Handles MPC computation lifecycle automatically
- */
 
 import * as anchor from "@coral-xyz/anchor";
 import { PublicKey, Transaction } from "@solana/web3.js";
@@ -62,9 +49,6 @@ import {
   retryWithBackoff,
 } from "./encryption";
 
-/**
- * Main adapter class that provides UI-compatible methods
- */
 export class PerpetualsAdapter {
   private program: anchor.Program;
   private provider: anchor.AnchorProvider;
@@ -82,9 +66,6 @@ export class PerpetualsAdapter {
     this.defaultCollateralCustody = config.defaultCollateralCustody;
   }
 
-  /**
-   * Initialize the adapter - must be called before any trading operations
-   */
   async initialize(): Promise<void> {
     if (!this.encryptionContext) {
       console.log("[Adapter] Initializing encryption context...");
@@ -96,25 +77,13 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Ensure encryption context is initialized
-   */
   private async ensureInitialized(): Promise<void> {
     if (!this.encryptionContext) {
       await this.initialize();
     }
   }
 
-  // ============================================================================
-  // TRADING METHODS
-  // ============================================================================
 
-  /**
-   * Open a new position
-   * 
-   * @param params Position parameters (price, collateral, size, side)
-   * @returns Transaction result with position key
-   */
   async openPosition(params: OpenPositionParams): Promise<TransactionResult> {
     await this.ensureInitialized();
 
@@ -125,12 +94,10 @@ export class PerpetualsAdapter {
       console.log("  Size (USD):", params.size.toString());
       console.log("  Collateral (USD):", params.collateral.toString());
 
-      // Generate position ID
       const positionId = generatePositionId();
       const positionIdBuffer = Buffer.alloc(8);
       positionIdBuffer.writeBigUInt64LE(positionId);
 
-        // Derive position PDA - seeds: [b"position", owner, position_id]
       const [positionPDA] = PublicKey.findProgramAddressSync(
         [
           Buffer.from("position"),
@@ -140,17 +107,14 @@ export class PerpetualsAdapter {
         this.program.programId
       );
 
-      // Encrypt position data
       const encrypted = encryptPositionData(
         BigInt(params.size.toString()),
         BigInt(params.collateral.toString()),
         this.encryptionContext.sharedSecret
       );
 
-      // Generate computation offset
       const computationOffset = generateComputationOffset();
 
-      // Get Arcium account addresses
       const arciumEnv = getArciumEnv();
       const computationAccount = getComputationAccAddress(
         this.program.programId,
@@ -166,7 +130,6 @@ export class PerpetualsAdapter {
         Buffer.from(compDefAccOffset).readUInt32LE()
       );
 
-      // Call encrypted open_position instruction
       console.log("  Sending transaction...");
       const signature = await this.program.methods
         .openPosition(
@@ -190,14 +153,12 @@ export class PerpetualsAdapter {
           executingPool,
           compDefAccount,
           position: positionPDA,
-          // TODO: Add pool, custody, oracle accounts when available
         })
         .rpc({ commitment: "confirmed" });
 
       console.log("  Transaction signature:", signature);
       console.log("  Waiting for MPC computation...");
 
-      // Wait for computation finalization
       await awaitComputationFinalization(
         this.provider,
         computationOffset,
@@ -223,12 +184,6 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Close an existing position
-   * 
-   * @param params Position to close
-   * @returns Transaction result
-   */
   async closePosition(params: ClosePositionParams): Promise<TransactionResult> {
     await this.ensureInitialized();
 
@@ -236,15 +191,12 @@ export class PerpetualsAdapter {
       console.log("\n[Adapter] Closing position...");
       console.log("  Position:", params.positionKey.toBase58());
 
-      // Fetch position to get position ID
       const position = await this.program.account.position.fetch(
         params.positionKey
       ) as any;
 
-      // Generate computation offset
       const computationOffset = generateComputationOffset();
 
-      // Get Arcium account addresses
       const computationAccount = getComputationAccAddress(
         this.program.programId,
         computationOffset
@@ -258,13 +210,12 @@ export class PerpetualsAdapter {
         Buffer.from(getCompDefAccOffset("close_position")).readUInt32LE()
       );
 
-      // Call encrypted close_position instruction
       console.log("  Sending transaction...");
       const signature = await this.program.methods
         .closePosition(
           computationOffset,
           position.positionId,
-          params.price || new anchor.BN(0) // 0 = use oracle price
+          params.price || new anchor.BN(0)
         )
         .accountsPartial({
           computationAccount,
@@ -275,14 +226,12 @@ export class PerpetualsAdapter {
           compDefAccount,
           position: params.positionKey,
           owner: this.provider.wallet.publicKey,
-          // TODO: Add pool, custody, oracle accounts
         })
         .rpc({ commitment: "confirmed" });
 
       console.log("  Transaction signature:", signature);
       console.log("  Waiting for MPC computation...");
 
-      // Wait for computation finalization
       await awaitComputationFinalization(
         this.provider,
         computationOffset,
@@ -306,12 +255,6 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Add collateral to an existing position
-   * 
-   * @param params Collateral to add
-   * @returns Transaction result
-   */
   async addCollateral(params: AddCollateralParams): Promise<TransactionResult> {
     await this.ensureInitialized();
 
@@ -320,22 +263,18 @@ export class PerpetualsAdapter {
       console.log("  Position:", params.positionKey.toBase58());
       console.log("  Collateral (USD):", params.collateral.toString());
 
-      // Fetch position to get position ID
       const position = await this.program.account.position.fetch(
         params.positionKey
       ) as any;
 
-      // Encrypt collateral amount
       const encrypted = encryptPositionData(
-        BigInt(0), // size not needed
+        BigInt(0),
         BigInt(params.collateral.toString()),
         this.encryptionContext.sharedSecret
       );
 
-      // Generate computation offset
       const computationOffset = generateComputationOffset();
 
-      // Get Arcium account addresses
       const computationAccount = getComputationAccAddress(
         this.program.programId,
         computationOffset
@@ -349,7 +288,6 @@ export class PerpetualsAdapter {
         Buffer.from(getCompDefAccOffset("add_collateral")).readUInt32LE()
       );
 
-      // Call encrypted add_collateral instruction
       console.log("  Sending transaction...");
       const signature = await this.program.methods
         .addCollateral(
@@ -367,14 +305,12 @@ export class PerpetualsAdapter {
           compDefAccount,
           position: params.positionKey,
           owner: this.provider.wallet.publicKey,
-          // TODO: Add pool, custody accounts
         })
         .rpc({ commitment: "confirmed" });
 
       console.log("  Transaction signature:", signature);
       console.log("  Waiting for MPC computation...");
 
-      // Wait for computation finalization
       await awaitComputationFinalization(
         this.provider,
         computationOffset,
@@ -398,12 +334,6 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Remove collateral from an existing position
-   * 
-   * @param params Collateral to remove
-   * @returns Transaction result
-   */
   async removeCollateral(params: RemoveCollateralParams): Promise<TransactionResult> {
     await this.ensureInitialized();
 
@@ -412,22 +342,18 @@ export class PerpetualsAdapter {
       console.log("  Position:", params.positionKey.toBase58());
       console.log("  Collateral (USD):", params.collateralUsd.toString());
 
-      // Fetch position to get position ID
       const position = await this.program.account.position.fetch(
         params.positionKey
       ) as any;
 
-      // Encrypt collateral amount
       const encrypted = encryptPositionData(
-        BigInt(0), // size not needed
+        BigInt(0),
         BigInt(params.collateralUsd.toString()),
         this.encryptionContext.sharedSecret
       );
 
-      // Generate computation offset
       const computationOffset = generateComputationOffset();
 
-      // Get Arcium account addresses
       const computationAccount = getComputationAccAddress(
         this.program.programId,
         computationOffset
@@ -441,7 +367,6 @@ export class PerpetualsAdapter {
         Buffer.from(getCompDefAccOffset("remove_collateral")).readUInt32LE()
       );
 
-      // Call encrypted remove_collateral instruction
       console.log("  Sending transaction...");
       const signature = await this.program.methods
         .removeCollateral(
@@ -459,14 +384,12 @@ export class PerpetualsAdapter {
           compDefAccount,
           position: params.positionKey,
           owner: this.provider.wallet.publicKey,
-          // TODO: Add pool, custody accounts
         })
         .rpc({ commitment: "confirmed" });
 
       console.log("  Transaction signature:", signature);
       console.log("  Waiting for MPC computation...");
 
-      // Wait for computation finalization
       await awaitComputationFinalization(
         this.provider,
         computationOffset,
@@ -490,12 +413,6 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Liquidate an underwater position
-   * 
-   * @param params Position to liquidate
-   * @returns Transaction result
-   */
   async liquidate(params: LiquidateParams): Promise<TransactionResult> {
     await this.ensureInitialized();
 
@@ -503,15 +420,12 @@ export class PerpetualsAdapter {
       console.log("\n[Adapter] Liquidating position...");
       console.log("  Position:", params.positionKey.toBase58());
 
-      // Fetch position to get position ID
       const position = await this.program.account.position.fetch(
         params.positionKey
       ) as any;
 
-      // Generate computation offset
       const computationOffset = generateComputationOffset();
 
-      // Get Arcium account addresses
       const computationAccount = getComputationAccAddress(
         this.program.programId,
         computationOffset
@@ -525,7 +439,6 @@ export class PerpetualsAdapter {
         Buffer.from(getCompDefAccOffset("liquidate")).readUInt32LE()
       );
 
-      // Call encrypted liquidate instruction
       console.log("  Sending transaction...");
       const signature = await this.program.methods
         .liquidate(
@@ -541,14 +454,12 @@ export class PerpetualsAdapter {
           compDefAccount,
           position: params.positionKey,
           liquidator: this.provider.wallet.publicKey,
-          // TODO: Add pool, custody, oracle accounts
         })
         .rpc({ commitment: "confirmed" });
 
       console.log("  Transaction signature:", signature);
       console.log("  Waiting for MPC computation...");
 
-      // Wait for computation finalization
       await awaitComputationFinalization(
         this.provider,
         computationOffset,
@@ -572,26 +483,15 @@ export class PerpetualsAdapter {
     }
   }
 
-  // ============================================================================
-  // POSITION QUERIES
-  // ============================================================================
 
-  /**
-   * Fetch a position and decrypt its data
-   * 
-   * @param positionKey Position account public key
-   * @returns Position in UI-compatible format
-   */
   async getPosition(positionKey: PublicKey): Promise<OriginalPosition | null> {
     await this.ensureInitialized();
 
     try {
-      // Fetch encrypted position
       const encryptedPosition = await this.program.account.position.fetch(
         positionKey
       ) as any;
 
-      // Decrypt size and collateral
       const decrypted = decryptPositionData(
         encryptedPosition.sizeUsdEncrypted,
         encryptedPosition.sizeNonce,
@@ -600,25 +500,23 @@ export class PerpetualsAdapter {
         this.encryptionContext.sharedSecret
       );
 
-      // Transform to UI-compatible format
-      // Note: Some fields may need to be computed or mocked
       const position: OriginalPosition = {
         owner: encryptedPosition.owner,
-        pool: this.defaultPool || PublicKey.default, // TODO: Store in position
-        custody: this.defaultCustody || PublicKey.default, // TODO: Store in position
+        pool: this.defaultPool || PublicKey.default,
+        custody: this.defaultCustody || PublicKey.default,
         collateralCustody: this.defaultCollateralCustody || PublicKey.default,
         openTime: encryptedPosition.openTime,
         updateTime: encryptedPosition.updateTime,
         side: encryptedPosition.side,
         price: encryptedPosition.entryPrice,
         sizeUsd: new anchor.BN(decrypted.sizeUsd.toString()),
-        borrowSizeUsd: new anchor.BN(0), // TODO: Calculate from leverage
+        borrowSizeUsd: new anchor.BN(0),
         collateralUsd: new anchor.BN(decrypted.collateralUsd.toString()),
-        unrealizedProfitUsd: new anchor.BN(0), // TODO: Calculate from current price
-        unrealizedLossUsd: new anchor.BN(0), // TODO: Calculate from current price
-        cumulativeInterestSnapshot: new anchor.BN(0), // TODO: Track interest
-        lockedAmount: new anchor.BN(0), // TODO: Calculate token amount
-        collateralAmount: new anchor.BN(0), // TODO: Calculate token amount
+        unrealizedProfitUsd: new anchor.BN(0),
+        unrealizedLossUsd: new anchor.BN(0),
+        cumulativeInterestSnapshot: new anchor.BN(0),
+        lockedAmount: new anchor.BN(0),
+        collateralAmount: new anchor.BN(0),
         bump: encryptedPosition.bump,
       };
 
@@ -629,29 +527,21 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Fetch all positions for a given owner
-   * 
-   * @param owner Owner public key (defaults to connected wallet)
-   * @returns Array of positions in UI-compatible format
-   */
   async getPositionsByOwner(owner?: PublicKey): Promise<OriginalPosition[]> {
     await this.ensureInitialized();
 
     const ownerKey = owner || this.provider.wallet.publicKey;
     
     try {
-      // Fetch all position accounts for owner
       const positions = await this.program.account.position.all([
         {
           memcmp: {
-            offset: 8, // Skip discriminator
+            offset: 8,
             bytes: ownerKey.toBase58(),
           },
         },
       ]);
 
-      // Decrypt and transform each position
       const results: OriginalPosition[] = [];
       for (const { publicKey, account } of positions) {
         const position = await this.getPosition(publicKey);
@@ -667,13 +557,7 @@ export class PerpetualsAdapter {
     }
   }
 
-  // ============================================================================
-  // VIEW FUNCTIONS (Read-only, no encryption needed)
-  // ============================================================================
 
-  /**
-   * Get entry price and fee for opening a position
-   */
   async getEntryPriceAndFee(
     sizeUsd: anchor.BN,
     side: PositionSide,
@@ -686,7 +570,6 @@ export class PerpetualsAdapter {
         .accountsPartial({
           pool: pool || this.defaultPool,
           custody: custody || this.defaultCustody,
-          // TODO: Add oracle account
         })
         .view();
 
@@ -700,16 +583,12 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Get oracle price for an asset
-   */
   async getOraclePrice(custody?: PublicKey): Promise<anchor.BN | null> {
     try {
       const result = await this.program.methods
         .getOraclePrice()
         .accountsPartial({
           custody: custody || this.defaultCustody,
-          // TODO: Add oracle account
         })
         .view();
 
@@ -720,21 +599,11 @@ export class PerpetualsAdapter {
     }
   }
 
-  // ============================================================================
-  // SWAP & LIQUIDITY OPERATIONS
-  // ============================================================================
 
-  /**
-   * Swap tokens between custodies
-   * 
-   * @param params Swap parameters
-   * @returns Transaction result
-   */
   async swap(params: SwapParams): Promise<TransactionResult> {
     try {
       console.log("\n[Adapter] Executing swap...");
 
-      // Derive custody PDAs
       const pool = this.defaultPool!;
       const receivingCustody = PublicKey.findProgramAddressSync(
         [Buffer.from("custody"), pool.toBuffer(), params.receivingCustodyMint.toBuffer()],
@@ -786,12 +655,6 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Add liquidity to pool
-   * 
-   * @param params Liquidity parameters
-   * @returns Transaction result
-   */
   async addLiquidity(params: AddLiquidityParams): Promise<TransactionResult> {
     try {
       console.log("\n[Adapter] Adding liquidity...");
@@ -842,12 +705,6 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Remove liquidity from pool
-   * 
-   * @param params Liquidity parameters
-   * @returns Transaction result
-   */
   async removeLiquidity(params: RemoveLiquidityParams): Promise<TransactionResult> {
     try {
       console.log("\n[Adapter] Removing liquidity...");
@@ -898,13 +755,7 @@ export class PerpetualsAdapter {
     }
   }
 
-  // ============================================================================
-  // ADDITIONAL VIEW FUNCTIONS
-  // ============================================================================
 
-  /**
-   * Calculate swap amount and fees
-   */
   async getSwapAmountAndFees(params: GetSwapAmountAndFeesParams): Promise<GetSwapAmountAndFeesResult | null> {
     try {
       const pool = this.defaultPool!;
@@ -917,7 +768,6 @@ export class PerpetualsAdapter {
         this.program.programId
       )[0];
 
-      // Get custody data to find oracle accounts
       const receivingCustodyData = await this.program.account.custody.fetch(receivingCustody) as any;
       const dispensingCustodyData = await this.program.account.custody.fetch(dispensingCustody) as any;
 
@@ -940,9 +790,6 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Calculate add liquidity amount and fee
-   */
   async getAddLiquidityAmountAndFee(params: GetAddLiquidityAmountParams): Promise<LiquidityAmountAndFee | null> {
     try {
       const pool = this.defaultPool!;
@@ -975,9 +822,6 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Calculate remove liquidity amount and fee
-   */
   async getRemoveLiquidityAmountAndFee(params: GetRemoveLiquidityAmountParams): Promise<LiquidityAmountAndFee | null> {
     try {
       const pool = this.defaultPool!;
@@ -1010,9 +854,6 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Get pool assets under management (AUM)
-   */
   async getAssetsUnderManagement(pool?: PublicKey): Promise<anchor.BN | null> {
     try {
       const result = await this.program.methods
@@ -1030,9 +871,6 @@ export class PerpetualsAdapter {
     }
   }
 
-  /**
-   * Get LP token price
-   */
   async getLpTokenPrice(pool?: PublicKey): Promise<anchor.BN | null> {
     try {
       const poolAccount = pool || this.defaultPool!;
@@ -1057,13 +895,7 @@ export class PerpetualsAdapter {
     }
   }
 
-  // ============================================================================
-  // HELPER METHODS
-  // ============================================================================
 
-  /**
-   * Get perpetuals PDA
-   */
   private getPerpetualsPDA(): PublicKey {
     return PublicKey.findProgramAddressSync(
       [Buffer.from("perpetuals")],
@@ -1071,38 +903,23 @@ export class PerpetualsAdapter {
     )[0];
   }
 
-  /**
-   * Get cluster account (from Arcium environment or config)
-   */
   private getClusterAccount(): PublicKey {
     const arciumEnv = getArciumEnv();
     return arciumEnv.arciumClusterPubkey;
   }
 
-  /**
-   * Set default pool account
-   */
   setDefaultPool(pool: PublicKey): void {
     this.defaultPool = pool;
   }
 
-  /**
-   * Set default custody account
-   */
   setDefaultCustody(custody: PublicKey): void {
     this.defaultCustody = custody;
   }
 
-  /**
-   * Set default collateral custody account
-   */
   setDefaultCollateralCustody(custody: PublicKey): void {
     this.defaultCollateralCustody = custody;
   }
 
-  /**
-   * Get encryption context (for advanced usage)
-   */
   getEncryptionContext(): any {
     return this.encryptionContext;
   }

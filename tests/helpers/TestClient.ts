@@ -1,7 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { PublicKey, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } from "@solana/web3.js";
-import { Blackjack } from "../../target/types/blackjack";
+import { Perpetuals } from "../../target/types/perpetuals";
 import {
   TOKEN_PROGRAM_ID,
   createMint,
@@ -11,7 +11,7 @@ import {
 } from "@solana/spl-token";
 
 export class TestClient {
-  program: Program<Blackjack>;
+  program: Program<Perpetuals>;
   provider: anchor.AnchorProvider;
   admin: Keypair;
   printErrors: boolean = false;
@@ -25,7 +25,7 @@ export class TestClient {
   users: UserInfo[] = [];
 
   constructor(
-    program: Program<Blackjack>,
+    program: Program<Perpetuals>,
     provider: anchor.AnchorProvider,
     admin: Keypair
   ) {

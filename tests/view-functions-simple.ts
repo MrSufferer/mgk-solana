@@ -1,6 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { Blackjack } from "../target/types/blackjack";
+import { Perpetuals } from "../target/types/perpetuals";
 import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
@@ -15,7 +15,7 @@ describe("View Functions with TestClient", () => {
   const admin = readKpJson(`${os.homedir()}/.config/solana/id.json`);
   
   anchor.setProvider(anchor.AnchorProvider.env());
-  const program = anchor.workspace.Blackjack as Program<Blackjack>;
+  const program = anchor.workspace.Perpetuals as Program<Perpetuals>;
   const provider = anchor.getProvider() as anchor.AnchorProvider;
 
   let testClient: TestClient;

@@ -1,4 +1,3 @@
-/// Arcium Perpetuals Client for CLI operations
 
 import {
   setProvider,
@@ -8,7 +7,7 @@ import {
   utils,
   BN,
 } from "@coral-xyz/anchor";
-import { Blackjack } from "../../target/types/blackjack";
+import { Perpetuals } from "../../target/types/perpetuals";
 import {
   PublicKey,
   SystemProgram,
@@ -37,10 +36,9 @@ import {
 
 export class PerpetualsClient {
   provider: AnchorProvider;
-  program: Program<Blackjack>;
+  program: Program<Perpetuals>;
   admin: Keypair;
 
-  // PDAs
   multisig: { publicKey: PublicKey; bump: number };
   authority: { publicKey: PublicKey; bump: number };
   perpetuals: { publicKey: PublicKey; bump: number };
@@ -53,7 +51,7 @@ export class PerpetualsClient {
 
     setProvider(this.provider);
 
-    this.program = workspace.Blackjack as Program<Blackjack>;
+    this.program = workspace.Perpetuals as Program<Perpetuals>;
 
     this.admin = Keypair.fromSecretKey(
       new Uint8Array(JSON.parse(readFileSync(adminKey).toString()))
@@ -94,8 +92,6 @@ export class PerpetualsClient {
       } else if (Array.isArray(extraSeed)) {
         seeds.push(Buffer.from(extraSeed));
       } else {
-        // Fallback for unexpected types that still have toBuffer
-        // @ts-expect-error runtime guard
         seeds.push(Buffer.from(extraSeed));
       }
     }
@@ -132,14 +128,12 @@ export class PerpetualsClient {
     return this.program.account.perpetuals.fetch(this.perpetuals.publicKey);
   };
 
-  // New async correct version by index, matching Anchor program logic
   getPoolKeyByIndex = (index: number): PublicKey => {
     const poolIndexBuffer = Buffer.alloc(8);
-    poolIndexBuffer.writeUInt32LE(index, 0); // match Anchor's .to_le_bytes()
+    poolIndexBuffer.writeUInt32LE(index, 0);
     return this.findProgramAddress("pool", poolIndexBuffer).publicKey;
   };
 
-  // Async: find pool index by name
   getPoolIndexByName = async (name: string): Promise<number> => {
     const perpetuals = await this.getPerpetuals();
     for (let i = 0; i < perpetuals.pools.length; ++i) {
@@ -151,14 +145,12 @@ export class PerpetualsClient {
     throw new Error(`Pool with name '${name}' not found`);
   };
 
-  // Async: get correct pool key for a given name using index
   getPoolKey = async (name: string): Promise<PublicKey> => {
     const i = await this.getPoolIndexByName(name);
     return this.getPoolKeyByIndex(i);
   };
 
   getNextPoolKey = async (): Promise<PublicKey> => {
-    // Fetch perpetuals account to get current pool count
     const perpetualsData = await this.getPerpetuals();
     const poolIndex = perpetualsData.pools.length;
     const poolIndexBuffer = Buffer.alloc(8);
@@ -170,7 +162,6 @@ export class PerpetualsClient {
   };
 
   getPool = async (name: string) => {
-    // Fetch perpetuals account to get all pool addresses
     const perpetuals = await this.getPerpetuals();
     for (const poolAddress of perpetuals.pools) {
       try {
@@ -180,7 +171,6 @@ export class PerpetualsClient {
           return pool;
         }
       } catch (e) {
-        // skip missing/invalid pool accounts
       }
     }
     throw new Error(`Pool with name '${name}' not found`);
@@ -191,7 +181,6 @@ export class PerpetualsClient {
     return this.program.account.pool.fetchMultiple(perpetuals.pools);
   };
 
-  // Async: get LP mint PDA using correct pool key
   getPoolLpTokenKey = async (name: string): Promise<PublicKey> => {
     const poolKey = await this.getPoolKey(name);
     return this.findProgramAddress("lp_token_mint", [poolKey]).publicKey;
@@ -290,8 +279,6 @@ export class PerpetualsClient {
     console.log(JSON.stringify(v, null, 2));
   };
 
-  ///////
-  // Instructions
 
   init = async (admins: PublicKey[], config: InitParams): Promise<void> => {
     const perpetualsProgramData = PublicKey.findProgramAddressSync(
@@ -422,7 +409,6 @@ export class PerpetualsClient {
     borrowRate: BorrowRateParams,
     ratios: TokenRatio[]
   ): Promise<void> => {
-    // Find pool address by name
     const perpetuals = await this.getPerpetuals();
     let poolAddress: PublicKey | undefined;
     for (const addr of perpetuals.pools) {
@@ -436,7 +422,6 @@ export class PerpetualsClient {
     }
     if (!poolAddress) throw new Error(`Pool '${poolName}' not found`);
 
-    // Derive custody and custodyTokenAccount PDAs
     const custodyPDA = PublicKey.findProgramAddressSync(
       [Buffer.from("custody"), poolAddress.toBuffer(), tokenMint.toBuffer()],
       this.program.programId
@@ -600,7 +585,6 @@ export class PerpetualsClient {
       });
   };
 
-  // View functions
   getOraclePrice = async (
     poolName: string,
     tokenMint: PublicKey,
@@ -674,7 +658,6 @@ export class PerpetualsClient {
       });
   };
 
-  // Fetch the oracleAccount field from the custody struct
   getCustodyOracleAccountKey = async (
     poolName: string,
     tokenMint: PublicKey
@@ -683,7 +666,6 @@ export class PerpetualsClient {
     return new PublicKey(custody.oracle.oracleAccount);
   };
 
-  // Add liquidity to a pool
   addLiquidity = async (
     poolName: string,
     tokenMint: PublicKey,
@@ -695,7 +677,6 @@ export class PerpetualsClient {
     const poolKey = await this.getPoolKey(poolName);
     const custodyKey = await this.getCustodyKey(poolName, tokenMint);
     
-    // Check if custody exists before attempting to add liquidity
     try {
       await this.getCustody(poolName, tokenMint);
     } catch (error) {
@@ -737,7 +718,6 @@ export class PerpetualsClient {
     return signature;
   };
 
-  // Remove liquidity from a pool
   removeLiquidity = async (
     poolName: string,
     tokenMint: PublicKey,
@@ -749,7 +729,6 @@ export class PerpetualsClient {
     const poolKey = await this.getPoolKey(poolName);
     const custodyKey = await this.getCustodyKey(poolName, tokenMint);
     
-    // Check if custody exists before attempting to remove liquidity
     try {
       await this.getCustody(poolName, tokenMint);
     } catch (error) {

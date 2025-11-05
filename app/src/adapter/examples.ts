@@ -17,7 +17,7 @@ async function exampleOpenPosition() {
   // Setup Anchor provider and program
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
-  const program = anchor.workspace.Blackjack as anchor.Program;
+  const program = anchor.workspace.Perpetuals as anchor.Program;
 
   // Create adapter instance
   const adapter = new PerpetualsAdapter({
@@ -67,7 +67,7 @@ async function exampleOpenPosition() {
  */
 async function exampleClosePosition(positionKey: PublicKey) {
   const provider = anchor.AnchorProvider.env();
-  const program = anchor.workspace.Blackjack as anchor.Program;
+  const program = anchor.workspace.Perpetuals as anchor.Program;
 
   const adapter = new PerpetualsAdapter({ program, provider });
   await adapter.initialize();
@@ -91,7 +91,7 @@ async function exampleClosePosition(positionKey: PublicKey) {
  */
 async function exampleAddCollateral(positionKey: PublicKey) {
   const provider = anchor.AnchorProvider.env();
-  const program = anchor.workspace.Blackjack as anchor.Program;
+  const program = anchor.workspace.Perpetuals as anchor.Program;
 
   const adapter = new PerpetualsAdapter({ program, provider });
   await adapter.initialize();
@@ -114,7 +114,7 @@ async function exampleAddCollateral(positionKey: PublicKey) {
  */
 async function exampleGetPositions() {
   const provider = anchor.AnchorProvider.env();
-  const program = anchor.workspace.Blackjack as anchor.Program;
+  const program = anchor.workspace.Perpetuals as anchor.Program;
 
   const adapter = new PerpetualsAdapter({ program, provider });
   await adapter.initialize();
@@ -139,7 +139,7 @@ async function exampleGetPositions() {
  */
 async function exampleGetEntryPrice() {
   const provider = anchor.AnchorProvider.env();
-  const program = anchor.workspace.Blackjack as anchor.Program;
+  const program = anchor.workspace.Perpetuals as anchor.Program;
 
   const adapter = new PerpetualsAdapter({ program, provider });
   await adapter.initialize();

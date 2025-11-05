@@ -91,7 +91,7 @@ import { PerpetualsAdapter, PositionSide } from "./adapter";
 
 // 1. Setup Anchor provider and program
 const provider = anchor.AnchorProvider.env();
-const program = anchor.workspace.Blackjack as anchor.Program;
+const program = anchor.workspace.Perpetuals as anchor.Program;
 
 // 2. Create adapter instance
 const adapter = new PerpetualsAdapter({

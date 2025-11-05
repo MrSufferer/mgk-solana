@@ -1,5 +1,4 @@
 #!/usr/bin/env ts-node
-/// Command-line interface for Arcium Perpetuals admin functions
 
 import { BN } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
@@ -88,7 +87,6 @@ async function addCustody(
   isVirtual: boolean,
   oracleType: string = "custom"
 ): Promise<void> {
-  // Production-ready default configurations
   let oracleTypeObj: OracleParams["oracleType"];
   if (oracleType === "pyth") {
     oracleTypeObj = { pyth: {} };
@@ -99,24 +97,24 @@ async function addCustody(
   }
 
   const oracleConfig: OracleParams = {
-    maxPriceError: new BN(10_000),         // 1% max price error
-    maxPriceAgeSec: 60,                     // 60 second max age
-    oracleType: oracleTypeObj,              // custom, pyth, or none
+    maxPriceError: new BN(10_000),
+    maxPriceAgeSec: 60,
+    oracleType: oracleTypeObj,
     oracleAccount: tokenOracle,
-    oracleAuthority: PublicKey.default,     // Permissionless by default
+    oracleAuthority: PublicKey.default,
   };
 
   const pricingConfig: PricingParams = {
     useEma: true,
     useUnrealizedPnlInAum: true,
-    tradeSpreadLong: new BN(100),           // 0.01% = 1 basis point
+    tradeSpreadLong: new BN(100),
     tradeSpreadShort: new BN(100),
-    swapSpread: new BN(200),                // 0.02%
-    minInitialLeverage: new BN(10_000),     // 1x
-    maxInitialLeverage: new BN(1_000_000),  // 100x
-    maxLeverage: new BN(1_000_000),         // 100x
+    swapSpread: new BN(200),
+    minInitialLeverage: new BN(10_000),
+    maxInitialLeverage: new BN(1_000_000),
+    maxLeverage: new BN(1_000_000),
     maxPayoffMult: new BN(10_000),
-    maxUtilization: new BN(10_000),         // 100%
+    maxUtilization: new BN(10_000),
     maxPositionLockedUsd: new BN(1_000_000_000),
     maxTotalLockedUsd: new BN(1_000_000_000),
   };
@@ -133,10 +131,10 @@ async function addCustody(
   };
 
   const fees: Fees = {
-    mode: { linear: {} },              // or { fixed: {} } or { optimal: {} }
+    mode: { linear: {} },
     ratioMult: new BN(20_000),
     utilizationMult: new BN(20_000),
-    swapIn: new BN(100),               // 0.01%
+    swapIn: new BN(100),
     swapOut: new BN(100),
     stableSwapIn: new BN(100),
     stableSwapOut: new BN(100),
@@ -145,16 +143,16 @@ async function addCustody(
     openPosition: new BN(100),
     closePosition: new BN(100),
     liquidation: new BN(100),
-    protocolShare: new BN(10),         // 10% of fees
-    feeMax: new BN(250),               // 0.025% max
-    feeOptimal: new BN(10),            // 0.001% optimal
+    protocolShare: new BN(10),
+    feeMax: new BN(250),
+    feeOptimal: new BN(10),
   };
 
   const borrowRate: BorrowRateParams = {
     baseRate: new BN(0),
     slope1: new BN(80_000),
     slope2: new BN(120_000),
-    optimalUtilization: new BN(800_000_000), // 80%
+    optimalUtilization: new BN(800_000_000),
   };
 
   const pool = await client.getPool(poolName);
@@ -230,7 +228,6 @@ function getCustomOracleAccount(poolName: string, tokenMint: PublicKey): void {
   );
 }
 
-// Change getLpTokenMint to async for correct usage
 async function getLpTokenMint(poolName: string): Promise<void> {
   client.prettyPrint(await client.getPoolLpTokenKey(poolName));
 }
@@ -301,17 +298,15 @@ async function removeLiquidity(
   client.log(`Liquidity removed successfully! Signature: ${signature}`);
 }
 
-// CLI Configuration
 const program = new Command();
 
 program
   .name("arcium-perpetuals")
   .description("CLI for managing Arcium Perpetuals DEX")
   .version("1.0.0")
-  .option("-u, --cluster-url <string>", "Cluster URL", "http://localhost:8899")
+  .option("-u, --cluster-url <string>", "Cluster URL", "http:
   .option("-k, --keypair <path>", "Admin keypair path", process.env.HOME + "/.config/solana/id.json");
 
-// Initialize commands
 program
   .command("init")
   .description("Initialize the perpetuals program")
@@ -354,7 +349,6 @@ program
     await getPerpetuals();
   });
 
-// Pool commands
 program
   .command("add-pool")
   .description("Add a new trading pool")
@@ -392,7 +386,6 @@ program
     await getPools();
   });
 
-// Custody commands
 program
   .command("add-custody")
   .description("Add token custody to a pool")
@@ -451,7 +444,6 @@ program
     client.log("Custody upgraded successfully");
   });
 
-// Oracle commands
 program
   .command("set-oracle-price")
   .description("Set custom oracle price (for testing)")
@@ -492,7 +484,6 @@ program
     await getOraclePrice(poolName, new PublicKey(tokenMint), options.ema);
   });
 
-// Utility commands
 program
   .command("get-lp-token-mint")
   .description("Get LP token mint address for a pool")
@@ -546,17 +537,14 @@ program
     const tokenMintKey = new PublicKey(tokenMint);
     const amountInBN = new BN(amountIn);
     
-    // Calculate minLpAmountOut if not provided (default to 80% to account for fees)
     let minLpAmountOutBN: BN;
     if (options.minLpAmountOut) {
       minLpAmountOutBN = new BN(options.minLpAmountOut);
     } else {
-      // Default to 80% of amountIn to account for fees (similar to UI behavior)
       minLpAmountOutBN = amountInBN.mul(new BN(80)).div(new BN(100));
       client.log(`Using default minLpAmountOut: ${minLpAmountOutBN.toString()} (80% of amountIn to account for fees)`);
     }
     
-    // Optionally calculate and display expected amounts using getAddLiquidityAmountAndFee
     try {
       const expectedAmounts = await client.getAddLiquidityAmountAndFee(
         poolName,
@@ -564,16 +552,14 @@ program
         amountInBN
       );
       client.log(`Expected LP amount: ${expectedAmounts.amount.toString()}, Fee: ${expectedAmounts.fee.toString()}`);
-      // Update minLpAmountOut to be slightly less than expected to account for slippage
       if (!options.minLpAmountOut) {
-        minLpAmountOutBN = expectedAmounts.amount.mul(new BN(95)).div(new BN(100)); // 95% of expected
+        minLpAmountOutBN = expectedAmounts.amount.mul(new BN(95)).div(new BN(100));
         client.log(`Adjusted minLpAmountOut: ${minLpAmountOutBN.toString()} (95% of expected LP amount)`);
       }
     } catch (error) {
       client.log(`Warning: Could not fetch expected amounts: ${error}`);
     }
     
-    // Derive accounts if not provided
     let fundingAccount: PublicKey;
     let lpTokenAccount: PublicKey;
     
@@ -625,7 +611,6 @@ program
     const lpAmountInBN = new BN(lpAmountIn);
     const minAmountOutBN = new BN(minAmountOut);
     
-    // Derive accounts if not provided
     let lpTokenAccount: PublicKey;
     let receivingAccount: PublicKey;
     
@@ -658,5 +643,4 @@ program
     );
   });
 
-// Parse and execute
 program.parse(process.argv);

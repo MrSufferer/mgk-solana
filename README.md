@@ -50,7 +50,7 @@ These operations work like traditional DeFi protocols:
 ### Program Structure
 
 ```
-programs/blackjack/
+programs/perpetuals/
 ├── src/
 │   ├── lib.rs           # Main program (33 instructions)
 │   ├── state.rs         # Account structures
