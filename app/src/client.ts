@@ -87,12 +87,15 @@ export class PerpetualsClient {
         seeds.push(Buffer.from(utils.bytes.utf8.encode(extraSeed)));
       } else if (extraSeed instanceof PublicKey) {
         seeds.push(extraSeed.toBuffer());
+      } else if (Buffer.isBuffer(extraSeed)) {
+        seeds.push(extraSeed);
       } else if (extraSeed instanceof Uint8Array) {
         seeds.push(Buffer.from(extraSeed));
       } else if (Array.isArray(extraSeed)) {
         seeds.push(Buffer.from(extraSeed));
       } else {
-        seeds.push(Buffer.from(extraSeed));
+        // This should never happen with the current type definition
+        throw new Error(`Unsupported seed type: ${typeof extraSeed}`);
       }
     }
 
@@ -468,10 +471,22 @@ export class PerpetualsClient {
     tokenMint: PublicKey,
     ratios: TokenRatio[]
   ): Promise<void> => {
+    const poolKey = await this.getPoolKey(poolName);
+    const custodyKey = await this.getCustodyKey(poolName, tokenMint);
+    const custodyTokenAccountKey = await this.getCustodyTokenAccountKey(poolName, tokenMint);
+
     await this.program.methods
       .removeCustody({ ratios })
       .accountsPartial({
         admin: this.admin.publicKey,
+        multisig: this.multisig.publicKey,
+        transferAuthority: this.authority.publicKey,
+        perpetuals: this.perpetuals.publicKey,
+        pool: poolKey,
+        custody: custodyKey,
+        custodyTokenAccount: custodyTokenAccountKey,
+        systemProgram: SystemProgram.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
       })
       .signers([this.admin])
       .rpc()

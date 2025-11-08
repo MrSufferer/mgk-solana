@@ -92,7 +92,10 @@ export class ViewHelper {
       }
       const coder = IdlCoder.fieldLayout(
         { type: returnType },
-        Array.from([...(IDL.accounts ?? []), ...(IDL.types ?? [])])
+        Array.from([
+          ...(IDL.accounts ?? []),
+          ...(IDL.types ?? [])
+        ])
       );
       // console.log("coder.decode(returnData); ::: ", coder.decode(returnData));
       return coder.decode(returnData);
@@ -117,7 +120,7 @@ export class ViewHelper {
     const result = await this.simulateTransaction(transaction);
     // console.log("result in aum fetch", result);
     const index = IDL.instructions.findIndex(
-      (f) => f.name === "getAssetsUnderManagement"
+      (f) => f.name === "get_assets_under_management"
     );
     return this.decodeLogs(result, index);
   };
@@ -153,7 +156,7 @@ export class ViewHelper {
     const result = await this.simulateTransaction(transaction);
     console.log("got entry result", result);
     const index = IDL.instructions.findIndex(
-      (f) => f.name === "getEntryPriceAndFee"
+      (f) => f.name === "get_entry_price_and_fee"
     );
     const res: any = this.decodeLogs(result, index);
     console.log("res in entry price and fee", res);
@@ -183,7 +186,7 @@ export class ViewHelper {
 
     const result = await this.simulateTransaction(transaction);
     const index = IDL.instructions.findIndex(
-      (f) => f.name === "getExitPriceAndFee"
+      (f) => f.name === "get_exit_price_and_fee"
     );
     const res: any = this.decodeLogs(result, index);
 
@@ -234,7 +237,7 @@ export class ViewHelper {
     const result = await this.simulateTransaction(transaction);
 
     const index = IDL.instructions.findIndex(
-      (f) => f.name === "getLiquidationPrice"
+      (f) => f.name === "get_liquidation_price"
     );
     console.log("results in liquidation price", result);
     console.log("decode logs", Number(this.decodeLogs(result, index)));
@@ -259,7 +262,7 @@ export class ViewHelper {
 
     const result = await this.simulateTransaction(transaction);
     const index = IDL.instructions.findIndex(
-      (f) => f.name === "getLiquidationState"
+      (f) => f.name === "get_liquidation_state"
     );
     return this.decodeLogs(result, index);
   };
@@ -278,7 +281,7 @@ export class ViewHelper {
       .transaction();
 
     const result = await this.simulateTransaction(transaction);
-    const index = IDL.instructions.findIndex((f) => f.name === "getPnl");
+    const index = IDL.instructions.findIndex((f) => f.name === "get_pnl");
     const res: any = this.decodeLogs<BN>(result, index);
     return {
       profit: res.profit,
@@ -314,7 +317,7 @@ export class ViewHelper {
     const result = await this.simulateTransaction(transaction);
     // console.log("result in swap  fetch", result);
     const index = IDL.instructions.findIndex(
-      (f) => f.name === "getSwapAmountAndFees"
+      (f) => f.name === "get_swap_amount_and_fees"
     );
     const res: any = this.decodeLogs(result, index);
 
@@ -349,7 +352,7 @@ export class ViewHelper {
 
     // console.log("result", result);
     const index = IDL.instructions.findIndex(
-      (f) => f.name === "getAddLiquidityAmountAndFee"
+      (f) => f.name === "get_add_liquidity_amount_and_fee"
     );
     const res: any = this.decodeLogs(result, index);
     return {
@@ -382,7 +385,7 @@ export class ViewHelper {
       .transaction();
     const result = await this.simulateTransaction(transaction);
     const index = IDL.instructions.findIndex(
-      (f) => f.name === "getRemoveLiquidityAmountAndFee"
+      (f) => f.name === "get_remove_liquidity_amount_and_fee"
     );
     const res: any = this.decodeLogs(result, index);
     return {
@@ -411,7 +414,7 @@ export class ViewHelper {
     const result = await this.simulateTransaction(transaction);
     // console.log("oracle result", result);
     const index = IDL.instructions.findIndex(
-      (f) => f.name === "getOraclePrice"
+      (f) => f.name === "get_oracle_price"
     );
     return this.decodeLogs<BN>(result, index);
   };

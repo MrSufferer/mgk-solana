@@ -8,6 +8,9 @@ skip-lint = false
 [programs.localnet]
 perpetuals = "78eJr4g84nZyThNHUxpUn1Ss3XcVququKWS4swk8G8xv"
 
+[programs.devnet]
+perpetuals = "78eJr4g84nZyThNHUxpUn1Ss3XcVququKWS4swk8G8xv"
+
 [registry]
 url = "https://api.apr.dev"
 
@@ -20,103 +23,3 @@ test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 'tests/**/!(helpers)/*.t
 
 address = "BKck65TgoKRokMjQM3datB9oRwJ8rAj2jxPXvHXUvcL6"
 program = "/Users/kyler/repos/examples/mgk-perp/artifacts/arcium_program_0.2.0.so"
-
-[[test.validator.account]]
-address = "FHriyvoZotYiFnbUzKFjzRSb2NiaC8RPWY7jtKuKhg65"
-filename = "artifacts/arcium_clock.json"
-
-[[test.validator.account]]
-address = "7MGSS4iKNM4sVib7bDZDJhVqB6EcchPwVnTKenCY1jt3"
-filename = "artifacts/arcium_fee_pool.json"
-
-[[test.validator.account]]
-address = "BoVUVSJAhob2cvM5z4JZTdS6VWRSznh3bbzQD1TFjvDP"
-filename = "artifacts/arx_mint.json"
-
-[[test.validator.account]]
-address = "ECmGsGAAPJimTwLk3SzkQ39pUQbaBj7U5qgSRRgYSFy"
-filename = "artifacts/wallet_acc_ECmG_YSFy.json"
-
-[[test.validator.account]]
-address = "CSbwKuFx6zBqYPBBX4fW6bnxGoSStcRk7C3LDUvGgfht"
-filename = "artifacts/arx_ata_ECmG_YSFy.json"
-
-[[test.validator.account]]
-address = "GZLktwPqnnudut2pw5WqrdMYNbZ7kgaaS7LmFCzFv8Fk"
-filename = "artifacts/wallet_acc_GZLk_v8Fk.json"
-
-[[test.validator.account]]
-address = "2nfmXECV1uW939gMECgnRS7zxRirZHimP4mg4b6AdfdP"
-filename = "artifacts/arx_ata_GZLk_v8Fk.json"
-
-[[test.validator.account]]
-address = "47ZnfqbGg2fnghtbqXTDqvabH9gjYSbaaHSoYrdy6zoS"
-filename = "artifacts/operator_acc_GZLk_v8Fk.json"
-
-[[test.validator.account]]
-address = "ELoRR19zrps1G3UYKcAxr7LKbw3kbqkVUXVY9dETMWN7"
-filename = "artifacts/arx_node_GZLk_v8Fk.json"
-
-[[test.validator.account]]
-address = "4jdDptJJa6eKB233LeroMhQCevxbTEDuJz7cBksYiDLo"
-filename = "artifacts/wallet_acc_4jdD_iDLo.json"
-
-[[test.validator.account]]
-address = "E8z58ueyFQkizv7m8DbT1bt5WZGAXe2vYbjAMpZ2XhYN"
-filename = "artifacts/arx_ata_4jdD_iDLo.json"
-
-[[test.validator.account]]
-address = "5rJidRzoQeEzt2jmupA7EmjvGov2ni5fCw8Y4pMEjNPT"
-filename = "artifacts/operator_acc_4jdD_iDLo.json"
-
-[[test.validator.account]]
-address = "XdfSwb8ZajhN7CerfBSJVhyfx5fyLtv34QVKSRgMFA9"
-filename = "artifacts/arx_node_4jdD_iDLo.json"
-
-[[test.validator.account]]
-address = "GgSqqAyH7AVY3Umcv8NvncrjFaNJuQLmxzxFxPoPW2Yd"
-filename = "artifacts/cluster_acc_0.json"
-
-[[test.validator.account]]
-address = "6ksM1RWU9ZxTWAkizBMgEASpXPJqmikk76kBMRCggfQx"
-filename = "artifacts/remove_collateral_raw_circuit_0.json"
-
-[[test.validator.account]]
-address = "C16cMu1tMXn3tvXuA2x7dNvzgaZRub5kswdoR556U5mW"
-filename = "artifacts/calculate_position_value_raw_circuit_0.json"
-
-[[test.validator.account]]
-address = "3vztU5etvFzLVAvCJ83LYF6AYBago8oNALuDkHe7U3X2"
-filename = "artifacts/close_position_raw_circuit_0.json"
-
-[[test.validator.account]]
-address = "Esy7DZWTR9dazZUJsjYQxx6avUFZBpziCeMpATCeX7ik"
-filename = "artifacts/liquidate_raw_circuit_0.json"
-
-[[test.validator.account]]
-address = "ERE92XRCXDQK6ovsC2QALd3Qwb7KrXR5UkcYARCk3FPU"
-filename = "artifacts/add_collateral_raw_circuit_0.json"
-
-[[test.validator.account]]
-address = "Avi1FvDJNpCptSqM1csV6VjHtEmywEN89SYToeyDHMBF"
-filename = "artifacts/open_position_raw_circuit_0.json"
-
-[[test.validator.account]]
-address = "7Eyx3T9YGggL8zP4c7dEHPn3Sac8hVmwH3Ri2eRuLtgF"
-filename = "artifacts/mxe_keygen_comp_def.json"
-
-[[test.validator.account]]
-address = "AEJqJUiZxcS94VqQJcw2cpH4q6QUzHkpNfJNfLgi2oNo"
-filename = "artifacts/mxe_keygen_comp.json"
-
-[[test.validator.account]]
-address = "3C4BQV771vDG5ZwpTp35EpTDddSFPcRCie8SXh1VszKT"
-filename = "artifacts/mxe_acc.json"
-
-[[test.validator.account]]
-address = "3PTKH6fWPuryDYxrGq8HorTWYCVU7qaqVbNMg3Q3P6EB"
-filename = "artifacts/mempool_acc.json"
-
-[[test.validator.account]]
-address = "2UzV1dGfRfhmYixqueU5UYAcvkmXMFNrbwNvJLdsddby"
-filename = "artifacts/executing_pool_acc.json"

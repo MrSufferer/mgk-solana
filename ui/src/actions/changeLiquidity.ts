@@ -23,6 +23,7 @@ import {
   Connection,
   LAMPORTS_PER_SOL,
   TransactionInstruction,
+  Transaction,
 } from "@solana/web3.js";
 
 export async function changeLiquidity(
@@ -51,14 +52,15 @@ export async function changeLiquidity(
 
   let preInstructions: TransactionInstruction[] = [];
 
-  let ataIx = await createAtaIfNeeded(
+  // Always create LP token account to ensure it exists before the constraint check
+  let lpTokenAccountAtaIx = await createAtaIfNeeded(
     publicKey,
     publicKey,
     pool.getLpTokenMint(),
     connection
   );
 
-  if (ataIx) preInstructions.push(ataIx);
+  if (lpTokenAccountAtaIx) preInstructions.push(lpTokenAccountAtaIx);
 
   if (custody.getTokenE() == TokenE.SOL) {
     let ataIx = await createAtaIfNeeded(
@@ -70,20 +72,27 @@ export async function changeLiquidity(
 
     if (ataIx) preInstructions.push(ataIx);
 
-    let wrapInstructions = await wrapSolIfNeeded(
-      publicKey,
-      publicKey,
-      connection,
-      tokenAmount
-    );
-    if (wrapInstructions) {
-      preInstructions.push(...wrapInstructions);
+    // Only wrap SOL when ADDING liquidity (spending SOL)
+    // When REMOVING liquidity, we receive SOL, so no wrapping needed
+    if (tab == Tab.Add) {
+      let wrapInstructions = await wrapSolIfNeeded(
+        publicKey,
+        publicKey,
+        connection,
+        tokenAmount
+      );
+      if (wrapInstructions) {
+        preInstructions.push(...wrapInstructions);
+      }
     }
   }
 
   let postInstructions: TransactionInstruction[] = [];
-  let unwrapTx = await unwrapSolIfNeeded(publicKey, publicKey, connection);
-  if (unwrapTx) postInstructions.push(...unwrapTx);
+  // Only unwrap SOL when removing liquidity (receiving SOL)
+  if (custody.getTokenE() == TokenE.SOL && tab == Tab.Remove) {
+    let unwrapTx = await unwrapSolIfNeeded(publicKey, publicKey, connection);
+    if (unwrapTx) postInstructions.push(...unwrapTx);
+  }
 
   let methodBuilder;
 
@@ -154,19 +163,45 @@ export async function changeLiquidity(
 
   console.log("after pre");
   try {
-    // await automaticSendTransaction(
-    //   methodBuilder,
-    //   perpetual_program.provider.connection
-    // );
+    // Use .transaction() to get the full transaction
     let tx = await methodBuilder.transaction();
+    
+    // DO NOT manually modify writable flags - Anchor encodes account metadata
+    // in instruction data, and modifying flags breaks validation
+    // The Rust program already marks custody_token_account and funding_account
+    // as #[account(mut)], so Anchor should handle them correctly
+    // Manually modifying flags causes InvalidAccountData errors in CPI calls
+    
     await manualSendTransaction(
       tx,
       publicKey,
       connection,
       walletContextState.signTransaction
     );
-  } catch (err) {
-    console.log(err);
+  } catch (err: any) {
+    console.error("=== changeLiquidity Error ===");
+    console.error("Error:", err);
+    console.error("Error message:", err?.message);
+    console.error("Error stack:", err?.stack);
+    
+    // If the error has transaction details, log them
+    if (err?.txid) {
+      console.error("Transaction ID:", err.txid);
+      try {
+        const txDetails = await connection.getTransaction(err.txid, {
+          commitment: "confirmed",
+          maxSupportedTransactionVersion: 0,
+        });
+        
+        if (txDetails?.meta?.logMessages) {
+          console.error("Transaction logs:", txDetails.meta.logMessages);
+        }
+      } catch (fetchErr) {
+        console.error("Error fetching transaction details:", fetchErr);
+      }
+    }
+    
+    console.error("=== End changeLiquidity Error ===");
     throw err;
   }
 }

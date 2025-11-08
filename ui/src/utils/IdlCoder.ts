@@ -96,7 +96,10 @@ export class IdlCoder {
             fieldName
           );
         } else if ("defined" in field.type) {
-          const defined = field.type.defined;
+          // Handle both string and object forms of defined type
+          const defined = typeof field.type.defined === 'string' 
+            ? field.type.defined 
+            : field.type.defined.name;
           // User defined type.
           if (types === undefined) {
             throw new IdlError("User defined types not provided");

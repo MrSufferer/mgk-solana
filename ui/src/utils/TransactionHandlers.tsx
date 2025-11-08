@@ -310,7 +310,53 @@ export const sendRawTransaction = async ({
       throw new Error("Transaction timed out");
       // notify(txid+" "+ " - Timed out", "error");
     }
-    throw new Error("Transaction Failed : " + err.message);
+    
+    // Fetch transaction details to get program logs
+    try {
+      const txDetails = await connection.getTransaction(txid, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0,
+      });
+      
+      if (txDetails) {
+        console.error("=== Transaction Error Details ===");
+        console.error("Transaction Signature:", txid);
+        console.error("Transaction URL:", `https://explorer.solana.com/tx/${txid}?cluster=devnet`);
+        
+        if (txDetails.meta) {
+          console.error("Transaction Error:", txDetails.meta.err);
+          console.error("Fee:", txDetails.meta.fee);
+          
+          if (txDetails.meta.logMessages && txDetails.meta.logMessages.length > 0) {
+            console.error("=== Program Logs ===");
+            txDetails.meta.logMessages.forEach((log: string, index: number) => {
+              console.error(`[${index}] ${log}`);
+            });
+          }
+          
+          if (txDetails.meta.err) {
+            console.error("=== Error Details ===");
+            console.error(JSON.stringify(txDetails.meta.err, null, 2));
+          }
+          
+          if (txDetails.meta.innerInstructions && txDetails.meta.innerInstructions.length > 0) {
+            console.error("=== Inner Instructions ===");
+            txDetails.meta.innerInstructions.forEach((innerIx: any, index: number) => {
+              console.error(`Inner Instruction ${index}:`, innerIx);
+            });
+          }
+        }
+        console.error("=== End Transaction Error Details ===");
+      } else {
+        console.error("Could not fetch transaction details for:", txid);
+      }
+    } catch (fetchErr) {
+      console.error("Error fetching transaction details:", fetchErr);
+    }
+    
+    // Better error handling for Solana errors
+    const errorMessage = err?.message || JSON.stringify(err) || String(err);
+    throw new Error(`Transaction Failed: ${errorMessage}`);
     // notify(txid+" "+failMessage, "error");
   } finally {
     done = true;

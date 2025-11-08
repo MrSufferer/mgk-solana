@@ -64,7 +64,7 @@ export async function wrapSolIfNeeded(
       SystemProgram.transfer({
         fromPubkey: publicKey,
         toPubkey: associatedTokenAccount,
-        lamports: Math.floor((payAmount - balance) * LAMPORTS_PER_SOL * 3),
+        lamports: Math.floor((payAmount - balance) * LAMPORTS_PER_SOL),
       })
     );
     preInstructions.push(
@@ -88,11 +88,24 @@ export async function unwrapSolIfNeeded(
     publicKey
   );
 
-  // const balance =
-  //   (await connection.getBalance(associatedTokenAccount)) / LAMPORTS_PER_SOL;
-  const balance = 1;
+  // Check if the account exists and has a balance
+  let accountExists = false;
+  let balance = 0;
+  
+  try {
+    const accountInfo = await connection.getAccountInfo(associatedTokenAccount);
+    if (accountInfo) {
+      accountExists = true;
+      // Parse token account balance
+      const tokenAccount = await connection.getTokenAccountBalance(associatedTokenAccount);
+      balance = tokenAccount.value.uiAmount || 0;
+    }
+  } catch (e) {
+    // Account doesn't exist, balance stays 0
+    console.log("Token account doesn't exist or error checking balance:", e);
+  }
 
-  if (balance > 0) {
+  if (accountExists && balance > 0) {
     preInstructions.push(
       createCloseAccountInstruction(
         associatedTokenAccount,

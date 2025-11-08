@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
-use anchor_spl::token::{Token, Mint};
+use anchor_spl::token::{Token, Mint, TokenAccount, Transfer, MintTo, Burn};
 
 pub mod state;
 pub use state::*;
@@ -1022,6 +1022,8 @@ pub mod perpetuals {
     ) -> Result<()> {
         require!(params.amount_in > 0, ErrorCode::InvalidInput);
         require!(params.min_lp_amount_out > 0, ErrorCode::InvalidInput);
+
+        let perpetuals = ctx.accounts.perpetuals.as_mut();
         
         let pool = &mut ctx.accounts.pool;
         let custody = &mut ctx.accounts.custody;
@@ -1043,48 +1045,22 @@ pub mod perpetuals {
         
         // Transfer tokens from funding_account to custody_token_account
         // Owner signs the transfer from their funding account
-        let transfer_ix = anchor_spl::token::spl_token::instruction::transfer(
-            &ctx.accounts.token_program.key(),
-            &ctx.accounts.funding_account.key(),
-            &ctx.accounts.custody_token_account.key(),
-            &ctx.accounts.owner.key(),
-            &[&ctx.accounts.owner.key()],
+        perpetuals.transfer_tokens_from_user(
+            ctx.accounts.funding_account.to_account_info(),
+            ctx.accounts.custody_token_account.to_account_info(),
+            ctx.accounts.owner.to_account_info(),
+            ctx.accounts.token_program.to_account_info(),
             params.amount_in,
-        )?;
-        anchor_lang::solana_program::program::invoke(
-            &transfer_ix,
-            &[
-                ctx.accounts.funding_account.to_account_info(),
-                ctx.accounts.custody_token_account.to_account_info(),
-                ctx.accounts.owner.to_account_info(),
-                ctx.accounts.token_program.to_account_info(),
-            ],
         )?;
         
         // Mint LP tokens to lp_token_account
         // Transfer authority PDA signs the mint
-        let seeds = &[
-            b"transfer_authority".as_ref(),
-            &[ctx.accounts.perpetuals.transfer_authority_bump],
-        ];
-        let signer = &[&seeds[..]];
-        let mint_ix = anchor_spl::token::spl_token::instruction::mint_to(
-            &ctx.accounts.token_program.key(),
-            &ctx.accounts.lp_token_mint.key(),
-            &ctx.accounts.lp_token_account.key(),
-            &ctx.accounts.transfer_authority.key(),
-            &[],
+        perpetuals.mint_tokens(
+            ctx.accounts.lp_token_mint.to_account_info(),
+            ctx.accounts.lp_token_account.to_account_info(),
+            ctx.accounts.transfer_authority.to_account_info(),
+            ctx.accounts.token_program.to_account_info(),
             lp_amount,
-        )?;
-        anchor_lang::solana_program::program::invoke_signed(
-            &mint_ix,
-            &[
-                ctx.accounts.lp_token_mint.to_account_info(),
-                ctx.accounts.lp_token_account.to_account_info(),
-                ctx.accounts.transfer_authority.to_account_info(),
-                ctx.accounts.token_program.to_account_info(),
-            ],
-            signer,
         )?;
         
         custody.assets.owned = custody.assets.owned
@@ -1111,6 +1087,7 @@ pub mod perpetuals {
         require!(params.lp_amount_in > 0, ErrorCode::InvalidInput);
         require!(params.min_amount_out > 0, ErrorCode::InvalidInput);
         
+        let perpetuals = ctx.accounts.perpetuals.as_mut();
         let pool = &mut ctx.accounts.pool;
         let custody = &mut ctx.accounts.custody;
         
@@ -1126,6 +1103,26 @@ pub mod perpetuals {
             .ok_or(ErrorCode::MathOverflow)?;
         
         require!(amount_out >= params.min_amount_out, ErrorCode::InvalidInput);
+        
+        // Transfer tokens from custody_token_account to receiving_account
+        // Transfer authority PDA signs the transfer
+        perpetuals.transfer_tokens(
+            ctx.accounts.custody_token_account.to_account_info(),
+            ctx.accounts.receiving_account.to_account_info(),
+            ctx.accounts.transfer_authority.to_account_info(),
+            ctx.accounts.token_program.to_account_info(),
+            amount_out,
+        )?;
+        
+        // Burn LP tokens from lp_token_account
+        // Owner signs the burn (not transfer_authority)
+        perpetuals.burn_tokens(
+            ctx.accounts.lp_token_mint.to_account_info(),
+            ctx.accounts.lp_token_account.to_account_info(),
+            ctx.accounts.owner.to_account_info(),
+            ctx.accounts.token_program.to_account_info(),
+            params.lp_amount_in,
+        )?;
         
         custody.assets.owned = custody.assets.owned
             .checked_sub(amount_out)
@@ -1444,6 +1441,94 @@ pub mod perpetuals {
         _params: UpgradeCustodyParams,
     ) -> Result<u8> {
         Ok(ctx.accounts.custody.bump)
+    }
+}
+
+impl Perpetuals {
+    pub fn mint_tokens<'info>(
+        &self,
+        mint: AccountInfo<'info>,
+        to: AccountInfo<'info>,
+        authority: AccountInfo<'info>,
+        token_program: AccountInfo<'info>,
+        amount: u64,
+    ) -> Result<()> {
+        let authority_seeds: &[&[&[u8]]] =
+            &[&[b"transfer_authority", &[self.transfer_authority_bump]]];
+        let context = CpiContext::new(
+            token_program,
+            MintTo {
+                mint,
+                to,
+                authority,
+            },
+        )
+        .with_signer(authority_seeds);
+
+        anchor_spl::token::mint_to(context, amount)
+    }
+
+    pub fn transfer_tokens_from_user<'info>(
+        &self,
+        from: AccountInfo<'info>,
+        to: AccountInfo<'info>,
+        authority: AccountInfo<'info>,
+        token_program: AccountInfo<'info>,
+        amount: u64,
+    ) -> Result<()> {
+        let context = CpiContext::new(
+            token_program,
+            Transfer {
+                from,
+                to,
+                authority,
+            },
+        );
+        anchor_spl::token::transfer(context, amount)
+    }
+
+    pub fn transfer_tokens<'info>(
+        &self,
+        from: AccountInfo<'info>,
+        to: AccountInfo<'info>,
+        authority: AccountInfo<'info>,
+        token_program: AccountInfo<'info>,
+        amount: u64,
+    ) -> Result<()> {
+        let authority_seeds: &[&[&[u8]]] =
+            &[&[b"transfer_authority", &[self.transfer_authority_bump]]];
+        let context = CpiContext::new(
+            token_program,
+            Transfer {
+                from,
+                to,
+                authority,
+            },
+        )
+        .with_signer(authority_seeds);
+
+        anchor_spl::token::transfer(context, amount)
+    }
+
+    pub fn burn_tokens<'info>(
+        &self,
+        mint: AccountInfo<'info>,
+        from: AccountInfo<'info>,
+        authority: AccountInfo<'info>,
+        token_program: AccountInfo<'info>,
+        amount: u64,
+    ) -> Result<()> {
+        // Note: owner signs the burn, not transfer_authority
+        let context = CpiContext::new(
+            token_program,
+            Burn {
+                mint,
+                from,
+                authority,
+            },
+        );
+
+        anchor_spl::token::burn(context, amount)
     }
 }
 
@@ -2543,25 +2628,54 @@ pub struct AddLiquidity<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
     /// CHECK: Transfer authority PDA
+    #[account(
+        seeds = [b"transfer_authority"],
+        bump = perpetuals.transfer_authority_bump
+    )]
     pub transfer_authority: AccountInfo<'info>,
-    pub perpetuals: Account<'info, Perpetuals>,
+    #[account(
+        seeds = [b"perpetuals"],
+        bump = perpetuals.perpetuals_bump
+    )]
+    pub perpetuals: Box<Account<'info, Perpetuals>>,
     #[account(mut)]
     pub pool: Account<'info, Pool>,
     #[account(mut)]
     pub custody: Account<'info, Custody>,
-    /// CHECK: Custody token account
-    pub custody_token_account: AccountInfo<'info>,
+    /// CHECK: oracle account for the receiving token
+    #[account(
+        constraint = custody_oracle_account.key() == custody.oracle.oracle_account
+    )]
+    pub custody_oracle_account: AccountInfo<'info>,
+    /// CHECK: Custody token account - validate as token account for CPI
+    #[account(
+        mut,
+        seeds = [b"custody_token_account",
+                 pool.key().as_ref(),
+                 custody.mint.as_ref()],
+        bump = custody.token_account_bump
+    )]
+    pub custody_token_account: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
         seeds = [b"lp_token_mint", pool.key().as_ref()],
         bump = pool.lp_token_bump
     )]
     pub lp_token_mint: Account<'info, Mint>,
-    /// CHECK: Funding account
-    pub funding_account: AccountInfo<'info>,
+    /// CHECK: Funding account - validate as token account for CPI
+    #[account(
+        mut,
+        constraint = funding_account.mint == custody.mint,
+        has_one = owner
+    )]
+    pub funding_account: Box<Account<'info, TokenAccount>>,
     /// CHECK: LP token account
-    #[account(mut)]
-    pub lp_token_account: AccountInfo<'info>,
+    #[account(
+        mut,
+        constraint = lp_token_account.mint == lp_token_mint.key(),
+        has_one = owner
+    )]
+    pub lp_token_account: Box<Account<'info, TokenAccount>>,
     pub token_program: Program<'info, Token>,
 }
 
@@ -2570,20 +2684,56 @@ pub struct RemoveLiquidity<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
     /// CHECK: Transfer authority PDA
+    #[account(
+        seeds = [b"transfer_authority"],
+        bump = perpetuals.transfer_authority_bump
+    )]
     pub transfer_authority: AccountInfo<'info>,
-    pub perpetuals: Account<'info, Perpetuals>,
+    #[account(
+        seeds = [b"perpetuals"],
+        bump = perpetuals.perpetuals_bump
+    )]
+    pub perpetuals: Box<Account<'info, Perpetuals>>,
     #[account(mut)]
     pub pool: Account<'info, Pool>,
     #[account(mut)]
     pub custody: Account<'info, Custody>,
-    /// CHECK: Custody token account
-    pub custody_token_account: AccountInfo<'info>,
-    /// CHECK: LP token mint
-    pub lp_token_mint: AccountInfo<'info>,
+    /// CHECK: oracle account for the receiving token
+    #[account(
+        constraint = custody_oracle_account.key() == custody.oracle.oracle_account
+    )]
+    pub custody_oracle_account: AccountInfo<'info>,
+    /// CHECK: Custody token account - validate as token account for CPI
+    #[account(
+        mut,
+        seeds = [b"custody_token_account",
+                 pool.key().as_ref(),
+                 custody.mint.as_ref()],
+        bump = custody.token_account_bump
+    )]
+    pub custody_token_account: Box<Account<'info, TokenAccount>>,
+    #[account(
+        mut,
+        seeds = [b"lp_token_mint", pool.key().as_ref()],
+        bump = pool.lp_token_bump
+    )]
+    pub lp_token_mint: Account<'info, Mint>,
     /// CHECK: LP token account
-    pub lp_token_account: AccountInfo<'info>,
+    #[account(
+        mut,
+        constraint = lp_token_account.mint == lp_token_mint.key(),
+        has_one = owner
+    )]
+    pub lp_token_account: Box<Account<'info, TokenAccount>>,
     /// CHECK: Receiving account
-    pub receiving_account: AccountInfo<'info>,
+    #[account(
+        mut,
+        constraint = receiving_account.mint == custody.mint,
+        has_one = owner
+    )]
+    pub receiving_account: Box<Account<'info, TokenAccount>>,
+    /// CHECK: Token program
+    pub token_program: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -2704,10 +2854,16 @@ pub struct AddCustody<'info> {
     pub custody: Account<'info, Custody>,
     /// CHECK: Custody token account PDA
     #[account(
-        seeds = [b"custody_token_account", pool.key().as_ref(), custody_token_mint.key().as_ref()],
+        init_if_needed,
+        payer = admin,
+        token::mint = custody_token_mint,
+        token::authority = transfer_authority,
+        seeds = [b"custody_token_account",
+                 pool.key().as_ref(),
+                 custody_token_mint.key().as_ref()],
         bump
     )]
-    pub custody_token_account: AccountInfo<'info>,
+    pub custody_token_account: Box<Account<'info, TokenAccount>>,
     /// CHECK: Custody token mint
     pub custody_token_mint: AccountInfo<'info>,
     pub system_program: Program<'info, System>,

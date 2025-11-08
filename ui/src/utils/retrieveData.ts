@@ -7,10 +7,10 @@ export async function checkIfAccountExists(
   account: PublicKey,
   connection: Connection
 ): Promise<boolean> {
-  let bal = await connection.getBalance(account);
-  if (bal > 0) {
-    return true;
-  } else {
+  try {
+    const accountInfo = await connection.getAccountInfo(account);
+    return accountInfo !== null;
+  } catch (e) {
     return false;
   }
 }

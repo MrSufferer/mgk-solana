@@ -304,7 +304,7 @@ program
   .name("arcium-perpetuals")
   .description("CLI for managing Arcium Perpetuals DEX")
   .version("1.0.0")
-  .option("-u, --cluster-url <string>", "Cluster URL", "http:
+  .option("-u, --cluster-url <string>", "Cluster URL", "https://api.devnet.solana.com")
   .option("-k, --keypair <path>", "Admin keypair path", process.env.HOME + "/.config/solana/id.json");
 
 program
