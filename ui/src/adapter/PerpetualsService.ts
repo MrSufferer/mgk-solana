@@ -33,7 +33,8 @@ export class PerpetualsService {
     provider: anchor.AnchorProvider,
     defaultPool?: PublicKey,
     defaultCustody?: PublicKey,
-    defaultCollateralCustody?: PublicKey
+    defaultCollateralCustody?: PublicKey,
+    clusterOffset?: number
   ) {
     const config: AdapterConfig = {
       program,
@@ -42,7 +43,7 @@ export class PerpetualsService {
       defaultCustody,
       defaultCollateralCustody,
     };
-    this.adapter = new PerpetualsAdapter(config);
+    this.adapter = new PerpetualsAdapter({ ...config, clusterOffset });
   }
 
   async initialize(): Promise<void> {

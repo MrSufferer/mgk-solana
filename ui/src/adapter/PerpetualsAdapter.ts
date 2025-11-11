@@ -13,7 +13,7 @@
  */
 
 import * as anchor from "@coral-xyz/anchor";
-import { PublicKey, Transaction } from "@solana/web3.js";
+import { PublicKey, Transaction, SystemProgram } from "@solana/web3.js";
 import {
   awaitComputationFinalization,
   getComputationAccAddress,
@@ -23,6 +23,10 @@ import {
   getCompDefAccAddress,
   getCompDefAccOffset,
   getArciumEnv,
+  getClusterAccAddress,
+  buildFinalizeCompDefTx,
+  getArciumAccountBaseSeed,
+  getArciumProgAddress,
 } from "@arcium-hq/client";
 
 import {
@@ -72,14 +76,16 @@ export class PerpetualsAdapter {
   private defaultPool?: PublicKey;
   private defaultCustody?: PublicKey;
   private defaultCollateralCustody?: PublicKey;
+  private clusterOffset?: number; // For devnet configuration
 
-  constructor(config: AdapterConfig) {
+  constructor(config: AdapterConfig & { clusterOffset?: number }) {
     this.program = config.program;
     this.provider = config.provider;
     this.encryptionContext = config.encryptionContext;
     this.defaultPool = config.defaultPool;
     this.defaultCustody = config.defaultCustody;
     this.defaultCollateralCustody = config.defaultCollateralCustody;
+    this.clusterOffset = config.clusterOffset;
   }
 
   /**
@@ -105,6 +111,103 @@ export class PerpetualsAdapter {
     }
   }
 
+  /**
+   * Check and initialize computation definition if needed
+   * Returns true if initialized (or already was), false if initialization failed
+   */
+  private async ensureCompDefInitialized(compDefName: string): Promise<boolean> {
+    const baseSeedCompDefAcc = getArciumAccountBaseSeed(
+      "ComputationDefinitionAccount"
+    );
+    const offset = getCompDefAccOffset(compDefName);
+    const compDefAcc = PublicKey.findProgramAddressSync(
+      [baseSeedCompDefAcc, this.program.programId.toBuffer(), offset],
+      getArciumProgAddress()
+    )[0];
+
+    // Check if already initialized
+    try {
+      await this.program.account.computationDefinitionAccount.fetch(compDefAcc);
+      console.log(`[Adapter] ${compDefName} comp def already initialized`);
+      return true;
+    } catch (e) {
+      // Not initialized, proceed to initialize
+      console.log(`[Adapter] ${compDefName} comp def not found, attempting to initialize...`);
+    }
+
+    // Initialize comp def based on name
+    const mxeAcc = getMXEAccAddress(this.program.programId);
+    let initMethod;
+    
+    switch (compDefName) {
+      case "open_position":
+        initMethod = this.program.methods.initOpenPositionCompDef();
+        break;
+      case "close_position":
+        initMethod = this.program.methods.initClosePositionCompDef();
+        break;
+      case "add_collateral":
+        initMethod = this.program.methods.initAddCollateralCompDef();
+        break;
+      case "remove_collateral":
+        initMethod = this.program.methods.initRemoveCollateralCompDef();
+        break;
+      case "liquidate":
+        initMethod = this.program.methods.initLiquidateCompDef();
+        break;
+      case "calculate_position_value":
+        initMethod = this.program.methods.initCalculatePositionValueCompDef();
+        break;
+      default:
+        throw new Error(`Unknown computation definition: ${compDefName}`);
+    }
+
+    try {
+      // Match the test file exactly - only provide the required accounts
+      // Anchor will auto-fill arciumProgram and systemProgram from the IDL
+      // Note: The test uses .signers([owner]) but we're using a Wallet, so Anchor handles signing
+      const initSig = await initMethod
+        .accounts({
+          payer: this.provider.wallet.publicKey,
+          mxeAccount: mxeAcc,
+          compDefAccount: compDefAcc,
+        })
+        .rpc({ commitment: "confirmed" });
+      
+      console.log(`[Adapter] Init comp def signature: ${initSig}`);
+      
+      // Finalize comp def
+      console.log(`[Adapter] Finalizing ${compDefName} CompDef...`);
+      const finalizeTx = await buildFinalizeCompDefTx(
+        this.provider,
+        Buffer.from(offset).readUInt32LE(),
+        this.program.programId
+      );
+      const latestBlockhash = await this.provider.connection.getLatestBlockhash();
+      finalizeTx.recentBlockhash = latestBlockhash.blockhash;
+      finalizeTx.lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
+      finalizeTx.sign(this.provider.wallet as any);
+      await this.provider.sendAndConfirm(finalizeTx, [], {
+        commitment: "confirmed",
+      });
+      console.log(`[Adapter] ${compDefName} CompDef finalized.`);
+    } catch (error: any) {
+      // If the error is about instruction deserialization, the method might not exist
+      // or the program IDL might be out of sync
+      if (error.message?.includes("InstructionDidNotDeserialize") || 
+          error.message?.includes("deserialize")) {
+        console.warn(`[Adapter] Warning: Could not initialize ${compDefName} comp def:`, error.message);
+        console.warn(`[Adapter] The initialization method may not exist in the deployed program.`);
+        console.warn(`[Adapter] The computation definition may need to be initialized manually using the test script.`);
+        console.warn(`[Adapter] Continuing anyway - the operation will fail if the comp def is not initialized.`);
+        return false;
+      }
+      // For other errors, still return false but log them
+      console.error(`[Adapter] Error initializing ${compDefName} comp def:`, error);
+      return false;
+    }
+  }
+
   // ============================================================================
   // TRADING METHODS
   // ============================================================================
@@ -117,6 +220,22 @@ export class PerpetualsAdapter {
    */
   async openPosition(params: OpenPositionParams): Promise<TransactionResult> {
     await this.ensureInitialized();
+    
+    // Try to ensure computation definition is initialized
+    // If initialization fails, we'll continue anyway and let the operation fail with a clearer error
+    const compDefInitialized = await this.ensureCompDefInitialized("open_position");
+    
+    if (!compDefInitialized) {
+      // If initialization failed, throw a clear error with instructions
+      throw new Error(
+        "Computation definition for 'open_position' is not initialized.\n\n" +
+        "Please initialize it manually by running:\n" +
+        "  arcium test --grep 'Initializes open_position computation definition'\n\n" +
+        "Or run the test file directly:\n" +
+        "  yarn test tests/perpetuals.ts\n\n" +
+        "The computation definition must be initialized before opening positions."
+      );
+    }
 
     try {
       console.log("\n[Adapter] Opening position...");
@@ -151,12 +270,11 @@ export class PerpetualsAdapter {
       const computationOffset = generateComputationOffset();
 
       // Get Arcium account addresses
-      const arciumEnv = getArciumEnv();
       const computationAccount = getComputationAccAddress(
         this.program.programId,
         computationOffset
       );
-      const clusterAccount = arciumEnv.arciumClusterPubkey;
+      const clusterAccount = this.getClusterAccount();
       const mxeAccount = getMXEAccAddress(this.program.programId);
       const mempoolAccount = getMempoolAccAddress(this.program.programId);
       const executingPool = getExecutingPoolAccAddress(this.program.programId);
@@ -1072,9 +1190,16 @@ export class PerpetualsAdapter {
   }
 
   /**
-   * Get cluster account (from Arcium environment or config)
+   * Get cluster account (from Arcium environment or devnet config)
+   * For devnet, uses getClusterAccAddress with cluster offset
+   * For local testing, uses getArciumEnv
    */
   private getClusterAccount(): PublicKey {
+    // If cluster offset is provided, use devnet configuration
+    if (this.clusterOffset !== undefined) {
+      return getClusterAccAddress(this.clusterOffset);
+    }
+    // Otherwise, use local testing environment
     const arciumEnv = getArciumEnv();
     return arciumEnv.arciumClusterPubkey;
   }

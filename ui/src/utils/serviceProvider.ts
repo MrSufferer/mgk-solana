@@ -1,6 +1,6 @@
 import { PerpetualsService } from '@/adapter/PerpetualsService';
 import { WalletContextState } from '@solana/wallet-adapter-react';
-import { getPerpetualProgramAndProvider } from '@/utils/constants';
+import { getPerpetualProgramAndProvider, ARCIUM_CLUSTER_OFFSET } from '@/utils/constants';
 import { PublicKey } from '@solana/web3.js';
 
 let serviceInstance: PerpetualsService | null = null;
@@ -22,7 +22,8 @@ export async function getPerpetualsService(
       provider,
       defaultPool,
       defaultCustody,
-      defaultCollateralCustody
+      defaultCollateralCustody,
+      ARCIUM_CLUSTER_OFFSET
     );
 
     await serviceInstance.initialize();

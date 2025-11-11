@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-perpetuals = "78eJr4g84nZyThNHUxpUn1Ss3XcVququKWS4swk8G8xv"
+perpetuals = "3xG4QD5fEj8THmKVZqAGcPiVEKMaT8hR8oUbNYWqV7jX"
 
 [programs.devnet]
-perpetuals = "78eJr4g84nZyThNHUxpUn1Ss3XcVququKWS4swk8G8xv"
+perpetuals = "3xG4QD5fEj8THmKVZqAGcPiVEKMaT8hR8oUbNYWqV7jX"
 
 [registry]
 url = "https://api.apr.dev"
@@ -21,5 +21,107 @@ wallet = "~/.config/solana/id.json"
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 'tests/**/!(helpers)/*.ts' 'tests/*.ts'"
 
+[test.validator]
+[[test.genesis]]
 address = "BKck65TgoKRokMjQM3datB9oRwJ8rAj2jxPXvHXUvcL6"
 program = "/Users/kyler/repos/examples/mgk-perp/artifacts/arcium_program_0.2.0.so"
+
+[[test.validator.account]]
+address = "FHriyvoZotYiFnbUzKFjzRSb2NiaC8RPWY7jtKuKhg65"
+filename = "artifacts/arcium_clock.json"
+
+[[test.validator.account]]
+address = "7MGSS4iKNM4sVib7bDZDJhVqB6EcchPwVnTKenCY1jt3"
+filename = "artifacts/arcium_fee_pool.json"
+
+[[test.validator.account]]
+address = "BoVUVSJAhob2cvM5z4JZTdS6VWRSznh3bbzQD1TFjvDP"
+filename = "artifacts/arx_mint.json"
+
+[[test.validator.account]]
+address = "ECmGsGAAPJimTwLk3SzkQ39pUQbaBj7U5qgSRRgYSFy"
+filename = "artifacts/wallet_acc_ECmG_YSFy.json"
+
+[[test.validator.account]]
+address = "CSbwKuFx6zBqYPBBX4fW6bnxGoSStcRk7C3LDUvGgfht"
+filename = "artifacts/arx_ata_ECmG_YSFy.json"
+
+[[test.validator.account]]
+address = "pupU91A4rabNGSMyjrHQBXFMU88FHnfNrr326fG1UBd"
+filename = "artifacts/wallet_acc_pupU_1UBd.json"
+
+[[test.validator.account]]
+address = "3cHUnMkTiJXPHLuZv2ErPCXcYp3vpMKxdd7UCtEsLbXa"
+filename = "artifacts/arx_ata_pupU_1UBd.json"
+
+[[test.validator.account]]
+address = "AuBBYHyKAdr5HSQLWu1R3WpxSG5UH5bgPKcwt98yLtfU"
+filename = "artifacts/operator_acc_pupU_1UBd.json"
+
+[[test.validator.account]]
+address = "ELoRR19zrps1G3UYKcAxr7LKbw3kbqkVUXVY9dETMWN7"
+filename = "artifacts/arx_node_pupU_1UBd.json"
+
+[[test.validator.account]]
+address = "2gxcH2vuXNQk9a49WWuaBdVRCPJo7dGcrzUVwftAhSwV"
+filename = "artifacts/wallet_acc_2gxc_hSwV.json"
+
+[[test.validator.account]]
+address = "Hz3rtyxyn3a8y8L4uEDNJxnoPsur4ZZoXN3Xqq1YStR"
+filename = "artifacts/arx_ata_2gxc_hSwV.json"
+
+[[test.validator.account]]
+address = "E69KYnrNj1zVvKN7pWJFhtaWvwfRvmMnjjPvjT5mvDdM"
+filename = "artifacts/operator_acc_2gxc_hSwV.json"
+
+[[test.validator.account]]
+address = "XdfSwb8ZajhN7CerfBSJVhyfx5fyLtv34QVKSRgMFA9"
+filename = "artifacts/arx_node_2gxc_hSwV.json"
+
+[[test.validator.account]]
+address = "GgSqqAyH7AVY3Umcv8NvncrjFaNJuQLmxzxFxPoPW2Yd"
+filename = "artifacts/cluster_acc_0.json"
+
+[[test.validator.account]]
+address = "9nQaLNR7FRLxzyM3krxkySDeiify8cHyHeL8AwA6zjWt"
+filename = "artifacts/remove_collateral_raw_circuit_0.json"
+
+[[test.validator.account]]
+address = "DKw1Ng4eeZ6y7LcHCviGr2M3HxBcbAQJDWF93r9Bh6KZ"
+filename = "artifacts/calculate_position_value_raw_circuit_0.json"
+
+[[test.validator.account]]
+address = "FYiQw8T7YmNL9arwdzvGwJtYEbEkHi4YQiUVyP3DvPph"
+filename = "artifacts/close_position_raw_circuit_0.json"
+
+[[test.validator.account]]
+address = "FjgAp861JhHk8mYQP2EWgdih2KUBaC4P6b7DjWbQ2L74"
+filename = "artifacts/liquidate_raw_circuit_0.json"
+
+[[test.validator.account]]
+address = "EqVRpsdg7dyusNEmnBocEL2AA4pYzTDnRmErfxmQ5ufG"
+filename = "artifacts/add_collateral_raw_circuit_0.json"
+
+[[test.validator.account]]
+address = "85HTZy6XYktAUzzY3CeNsNsCF2J1hYpqiuPWPNnzYLmE"
+filename = "artifacts/open_position_raw_circuit_0.json"
+
+[[test.validator.account]]
+address = "8KVj3ovfhvwLp2qi6UUe6HQS3CURCYcdV9aG55EjiDRA"
+filename = "artifacts/mxe_keygen_comp_def.json"
+
+[[test.validator.account]]
+address = "3i8c8kzK7AazAwgHpP9c4GvM5JNG2xNXXVsLPaR66iZL"
+filename = "artifacts/mxe_keygen_comp.json"
+
+[[test.validator.account]]
+address = "BT8sBreiS6Xa7bizxAPCjCx2vM5jyijvCmGcS6dnR2gn"
+filename = "artifacts/mxe_acc.json"
+
+[[test.validator.account]]
+address = "7SynovD1aWZLJdvcVkCGPpACkUMHdpAKqXuWCEmnfPxP"
+filename = "artifacts/mempool_acc.json"
+
+[[test.validator.account]]
+address = "7EDrm6VDXr2Wx56z9trAGxi2T2YL8R9u8FRJdAzr5HUm"
+filename = "artifacts/executing_pool_acc.json"

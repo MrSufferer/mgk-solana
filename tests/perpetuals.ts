@@ -1,6 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, Connection } from "@solana/web3.js";
 import { Perpetuals } from "../target/types/perpetuals";
 import { randomBytes } from "crypto";
 import {
@@ -26,6 +26,37 @@ import * as fs from "fs";
 import * as os from "os";
 import { expect } from "chai";
 
+/**
+ * Configuration for Arcium Perpetuals DEX Tests
+ * 
+ * Default: DEVNET
+ * To run tests on devnet (default):
+ *   arcium test
+ * 
+ * To run tests locally:
+ *   USE_LOCALNET=true arcium test
+ * 
+ * For devnet, you can set a custom RPC URL via RPC_URL environment variable.
+ * Recommended RPC providers: Helius, QuickNode
+ * 
+ * Example with custom RPC:
+ *   RPC_URL=https://devnet.helius-rpc.com/?api-key=<your-key> arcium test
+ * 
+ * Cluster offsets for devnet:
+ *   - 1078779259 (v0.3.0) - default
+ *   - 3726127828 (v0.3.0)
+ *   - 768109697 (v0.4.0)
+ * 
+ * See: https://docs.arcium.com/developers/deployment
+ */
+
+// Configuration: Set to true to use localnet, false (default) for devnet
+const USE_LOCALNET = process.env.USE_LOCALNET === "true" || false;
+
+// Arcium cluster offset for devnet (v0.3.0)
+// Available offsets: 1078779259 (v0.3.0), 3726127828 (v0.3.0), 768109697 (v0.4.0)
+const ARCIUM_CLUSTER_OFFSET = 1078779259;
+
 // Helper to read keypair from file
 function readKpJson(path: string) {
   const kpJson = JSON.parse(fs.readFileSync(path, "utf-8"));
@@ -35,10 +66,50 @@ function readKpJson(path: string) {
 describe("Perpetuals DEX", () => {
   const owner = readKpJson(`${os.homedir()}/.config/solana/id.json`);
 
-  // Configure the client to use the local cluster
-  anchor.setProvider(anchor.AnchorProvider.env());
-  const program = anchor.workspace.Perpetuals as Program<Perpetuals>;
-  const provider = anchor.getProvider() as anchor.AnchorProvider;
+  // Configure the client based on USE_LOCALNET flag
+  // Default: devnet, set USE_LOCALNET=true for local testing
+  let program: Program<Perpetuals>;
+  let provider: anchor.AnchorProvider;
+  let clusterAccount: PublicKey;
+
+  if (USE_LOCALNET) {
+    // Local configuration
+    console.log("🔧 Using LOCALNET configuration");
+    anchor.setProvider(anchor.AnchorProvider.env());
+    program = anchor.workspace.Perpetuals as Program<Perpetuals>;
+    provider = anchor.getProvider() as anchor.AnchorProvider;
+    
+    // Use local Arcium environment
+    const arciumEnv = getArciumEnv();
+    clusterAccount = arciumEnv.arciumClusterPubkey;
+    console.log(`  Cluster Account: ${clusterAccount.toBase58()}`);
+  } else {
+    // Devnet configuration (default)
+    console.log("🔧 Using DEVNET configuration (default)");
+    const connection = new Connection(
+      process.env.RPC_URL || "https://api.devnet.solana.com",
+      "confirmed"
+    );
+    const wallet = new anchor.Wallet(owner);
+    provider = new anchor.AnchorProvider(connection, wallet, {
+      commitment: "confirmed",
+    });
+    anchor.setProvider(provider);
+    
+    // Load IDL for devnet
+    const idl = JSON.parse(
+      fs.readFileSync("./target/idl/perpetuals.json", "utf-8")
+    );
+    program = new Program(idl, provider) as Program<Perpetuals>;
+    
+    // Use cluster offset for devnet
+    clusterAccount = getClusterAccAddress(ARCIUM_CLUSTER_OFFSET);
+    console.log(`  Cluster Account: ${clusterAccount.toBase58()}`);
+    console.log(`  Cluster Offset: ${ARCIUM_CLUSTER_OFFSET}`);
+    if (process.env.RPC_URL) {
+      console.log(`  RPC URL: ${process.env.RPC_URL}`);
+    }
+  }
 
   type Event = anchor.IdlEvents<(typeof program)["idl"]>;
   const awaitEvent = async <E extends keyof Event>(
@@ -57,8 +128,6 @@ describe("Perpetuals DEX", () => {
       });
     });
   };
-
-  const arciumEnv = getArciumEnv();
 
   it("Initializes open_position computation definition", async () => {
     console.log("Initializing open_position computation definition");
@@ -190,7 +259,7 @@ describe("Perpetuals DEX", () => {
           program.programId,
           computationOffset
         ),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),
@@ -363,7 +432,7 @@ describe("Perpetuals DEX", () => {
         owner: owner.publicKey,
         payer: owner.publicKey,
         computationAccount: getComputationAccAddress(program.programId, computationOffset1),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),
@@ -400,7 +469,7 @@ describe("Perpetuals DEX", () => {
       .accountsPartial({
         payer: owner.publicKey,
         computationAccount: getComputationAccAddress(program.programId, computationOffset2),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),
@@ -549,7 +618,7 @@ describe("Perpetuals DEX", () => {
         owner: owner.publicKey,
         payer: owner.publicKey,
         computationAccount: getComputationAccAddress(program.programId, computationOffset1),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),
@@ -589,7 +658,7 @@ describe("Perpetuals DEX", () => {
         owner: owner.publicKey,
         payer: owner.publicKey,
         computationAccount: getComputationAccAddress(program.programId, computationOffset2),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),
@@ -724,7 +793,7 @@ describe("Perpetuals DEX", () => {
         owner: owner.publicKey,
         payer: owner.publicKey,
         computationAccount: getComputationAccAddress(program.programId, computationOffset1),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),
@@ -763,7 +832,7 @@ describe("Perpetuals DEX", () => {
         owner: owner.publicKey,
         payer: owner.publicKey,
         computationAccount: getComputationAccAddress(program.programId, computationOffset2),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),
@@ -895,7 +964,7 @@ describe("Perpetuals DEX", () => {
         owner: owner.publicKey,
         payer: owner.publicKey,
         computationAccount: getComputationAccAddress(program.programId, computationOffset1),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),
@@ -941,7 +1010,7 @@ describe("Perpetuals DEX", () => {
         liquidator: owner.publicKey, // In practice, this would be a different account
         payer: owner.publicKey,
         computationAccount: getComputationAccAddress(program.programId, computationOffset2),
-        clusterAccount: arciumEnv.arciumClusterPubkey,
+        clusterAccount: clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(program.programId),
         executingPool: getExecutingPoolAccAddress(program.programId),

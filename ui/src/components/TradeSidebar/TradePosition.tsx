@@ -187,12 +187,19 @@ export function TradePosition(props: Props) {
         return;
       }
 
+      const collateralCustody = pool!.getCustodyAccount(payToken);
+      if (!collateralCustody) {
+        console.error(`No custody found for collateral token: ${payToken}`);
+        return;
+      }
+
       let getEntryPrice = await View.getEntryPriceAndFee(
         payAmount * conversionRatio,
         positionAmount,
         props.side,
         pool!,
-        custody
+        custody,
+        collateralCustody
       );
 
       // console.log("get entry values", getEntryPrice);

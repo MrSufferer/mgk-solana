@@ -92,3 +92,7 @@ export const DEFAULT_CUSTODY = new PublicKey("11111111111111111111111111111111")
 export const DEFAULT_COLLATERAL_CUSTODY = new PublicKey("11111111111111111111111111111111");
 
 export const USE_ENCRYPTED_TRADING = process.env.NEXT_PUBLIC_USE_ENCRYPTED === 'true' || false;
+
+// Arcium cluster offset for devnet
+// Available offsets: 1078779259 (v0.3.0), 3726127828 (v0.3.0), 768109697 (v0.4.0)
+export const ARCIUM_CLUSTER_OFFSET = 1078779259; // Default to v0.3.0

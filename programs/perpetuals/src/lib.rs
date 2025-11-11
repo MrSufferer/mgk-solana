@@ -13,7 +13,7 @@ const COMP_DEF_OFFSET_ADD_COLLATERAL: u32 = comp_def_offset("add_collateral");
 const COMP_DEF_OFFSET_REMOVE_COLLATERAL: u32 = comp_def_offset("remove_collateral");
 const COMP_DEF_OFFSET_LIQUIDATE: u32 = comp_def_offset("liquidate");
 
-declare_id!("78eJr4g84nZyThNHUxpUn1Ss3XcVququKWS4swk8G8xv");
+declare_id!("3xG4QD5fEj8THmKVZqAGcPiVEKMaT8hR8oUbNYWqV7jX");
 
 #[arcium_program]
 pub mod perpetuals {

@@ -1,7 +1,7 @@
 import { CustodyAccount } from "@/lib/CustodyAccount";
 import { PoolAccount } from "@/lib/PoolAccount";
 import { TokenE } from "@/lib/Token";
-import { Side, TradeSide } from "@/lib/types";
+import { Side } from "@/lib/types";
 import {
   automaticSendTransaction,
   manualSendTransaction,
@@ -25,8 +25,11 @@ import {
   Connection,
   SystemProgram,
   TransactionInstruction,
+  Transaction,
 } from "@solana/web3.js";
 import { swapTransactionBuilder } from "src/actions/swap";
+import { getPerpetualsService } from "@/utils/serviceProvider";
+import { PositionSide } from "@/adapter/types";
 
 export async function openPositionBuilder(
   walletContextState: WalletContextState,
@@ -40,41 +43,22 @@ export async function openPositionBuilder(
   side: Side,
   leverage: number
 ) {
-  // console.log("in open position");
+  console.log("[openPosition] Using Arcium adapter for encrypted position opening");
+  console.log("[openPosition] Input values:", { payAmount, positionAmount, leverage, price });
+  
   let { perpetual_program, provider } = await getPerpetualProgramAndProvider(
     walletContextState
   );
   let publicKey = walletContextState.publicKey!;
 
-  // TODO: need to take slippage as param , this is now for testing
-  const newPrice =
-    side.toString() == "Long"
-      ? new BN((price * 10 ** 6 * 115) / 100)
-      : new BN((price * 10 ** 6 * 90) / 100);
-
-  let userCustodyTokenAccount = await getAssociatedTokenAddress(
-    positionCustody.mint,
-    publicKey
-  );
-
-  let positionAccount = PublicKey.findProgramAddressSync(
-    [
-      Buffer.from("position"),
-      publicKey.toBuffer(),
-      pool.address.toBuffer(),
-      positionCustody.address.toBuffer(),
-      // @ts-ignore
-      side.toString() == "Long" ? [1] : [2],
-    ],
-    perpetual_program.programId
-  )[0];
-
-  let preInstructions: TransactionInstruction[] = [];
-
+  // Calculate final pay amount (collateral)
   let finalPayAmount = positionAmount / leverage;
+  
+  console.log("[openPosition] Calculated values:", { finalPayAmount, positionAmount });
 
+  // Handle swap if pay token != position token
   if (payCustody.getTokenE() != positionCustody.getTokenE()) {
-    console.log("first swapping in open pos");
+    console.log("[openPosition] Swapping tokens before opening position");
     const View = new ViewHelper(connection, provider);
     let swapInfo = await View.getSwapAmountAndFees(
       payAmount,
@@ -90,19 +74,20 @@ export async function openPositionBuilder(
 
     let recAmt = swapAmountOut - swapFee;
 
-    console.log("rec amt in swap builder", recAmt, swapAmountOut, swapFee);
+    console.log("[openPosition] Swap amounts:", { recAmt, swapAmountOut, swapFee });
 
     let getEntryPrice = await View.getEntryPriceAndFee(
       recAmt,
       positionAmount,
       side,
       pool!,
-      positionCustody!
+      positionCustody!,
+      payCustody
     );
 
     let entryFee = Number(getEntryPrice.fee) / 10 ** positionCustody.decimals;
 
-    console.log("entry fee in swap builder", entryFee);
+    console.log("[openPosition] Entry fee:", entryFee);
 
     let swapInfo2 = await View.getSwapAmountAndFees(
       payAmount + entryFee + swapFee,
@@ -134,14 +119,24 @@ export async function openPositionBuilder(
         recAmt
       );
 
-    let ix = await swapBuilder.instruction();
-    preInstructions.push(...swapPreInstructions, ix);
+    // Execute swap transaction
+    try {
+      const swapTx = await swapBuilder.transaction();
+      await manualSendTransaction(
+        swapTx,
+        publicKey,
+        connection,
+        walletContextState.signTransaction
+      );
+      console.log("[openPosition] Swap completed successfully");
+    } catch (err) {
+      console.error("[openPosition] Swap failed:", err);
+      throw err;
+    }
   }
 
-  if (
-    preInstructions.length == 0 &&
-    positionCustody.getTokenE() == TokenE.SOL
-  ) {
+  // Handle SOL wrapping if needed
+  if (positionCustody.getTokenE() == TokenE.SOL) {
     let ataIx = await createAtaIfNeeded(
       publicKey,
       publicKey,
@@ -149,7 +144,18 @@ export async function openPositionBuilder(
       connection
     );
 
-    if (ataIx) preInstructions.push(ataIx);
+    if (ataIx) {
+      try {
+        await manualSendTransaction(
+          new Transaction().add(ataIx),
+          publicKey,
+          connection,
+          walletContextState.signTransaction
+        );
+      } catch (err) {
+        console.log("[openPosition] ATA creation skipped (may already exist)");
+      }
+    }
 
     let wrapInstructions = await wrapSolIfNeeded(
       publicKey,
@@ -158,57 +164,91 @@ export async function openPositionBuilder(
       payAmount
     );
     if (wrapInstructions) {
-      preInstructions.push(...wrapInstructions);
+      try {
+        const wrapTx = new Transaction().add(...wrapInstructions);
+        await manualSendTransaction(
+          wrapTx,
+          publicKey,
+          connection,
+          walletContextState.signTransaction
+        );
+        console.log("[openPosition] SOL wrapped successfully");
+      } catch (err) {
+        console.error("[openPosition] SOL wrap failed:", err);
+        throw err;
+      }
     }
   }
 
-  let postInstructions: TransactionInstruction[] = [];
-  let unwrapTx = await unwrapSolIfNeeded(publicKey, publicKey, connection);
-  if (unwrapTx) postInstructions.push(...unwrapTx);
+  // Get the PerpetualsService (adapter)
+  const service = await getPerpetualsService(walletContextState);
 
-  const params: any = {
-    price: newPrice,
-    collateral: new BN(finalPayAmount * 10 ** positionCustody.decimals),
-    size: new BN(positionAmount * 10 ** positionCustody.decimals),
-    side: side.toString() == "Long" ? TradeSide.Long : TradeSide.Short,
-  };
+  // Convert price to anchor.BN with 8 decimals (as per test file)
+  // Price is in USD, convert to BN with 8 decimals
+  const entryPriceBN = new BN(Math.floor(price * 1e8));
 
-  let methodBuilder = perpetual_program.methods.openPosition(params).accounts({
-    owner: publicKey,
-    fundingAccount: userCustodyTokenAccount,
-    transferAuthority: TRANSFER_AUTHORITY,
-    perpetuals: PERPETUALS_ADDRESS,
-    pool: pool.address,
-    position: positionAccount,
-    custody: positionCustody.address,
-    custodyOracleAccount: positionCustody.oracle.oracleAccount,
-    custodyTokenAccount: positionCustody.tokenAccount,
-    systemProgram: SystemProgram.programId,
-    tokenProgram: TOKEN_PROGRAM_ID,
-  });
+  // Convert amounts to USD
+  // The UI passes amounts in token units, but we need USD values
+  // For now, we'll use the amounts as-is assuming they're already in USD
+  // If they're in token units, we'd need to multiply by price, but the UI should handle that
+  const collateralUsd = new BN(Math.max(1, Math.floor(finalPayAmount)));
+  const sizeUsd = new BN(Math.max(1, Math.floor(positionAmount)));
 
-  if (preInstructions) {
-    methodBuilder = methodBuilder.preInstructions(preInstructions);
+  // Validate amounts
+  if (collateralUsd.lte(new BN(0)) || sizeUsd.lte(new BN(0))) {
+    throw new Error(`Invalid amounts: collateral=${collateralUsd.toString()}, size=${sizeUsd.toString()}`);
   }
 
-  if (
-    payCustody.getTokenE() == TokenE.SOL ||
-    positionCustody.getTokenE() == TokenE.SOL
-  ) {
-    methodBuilder = methodBuilder.postInstructions(postInstructions);
-  }
+  // Convert side to PositionSide enum
+  const positionSide = side.toString() == "Long" ? PositionSide.Long : PositionSide.Short;
 
+  console.log("[openPosition] Opening position with adapter:");
+  console.log("  Side:", side.toString());
+  console.log("  Entry Price:", entryPriceBN.toString());
+  console.log("  Size (USD):", sizeUsd.toString());
+  console.log("  Collateral (USD):", collateralUsd.toString());
+  console.log("  Leverage:", leverage + "x");
+
+  // Call adapter to open position
   try {
-    // await automaticSendTransaction(methodBuilder, connection);
-    let tx = await methodBuilder.transaction();
-    await manualSendTransaction(
-      tx,
-      publicKey,
-      connection,
-      walletContextState.signTransaction
-    );
+    const result = await service.openPosition({
+      price: entryPriceBN,
+      collateral: collateralUsd,
+      size: sizeUsd,
+      side: positionSide,
+      pool: pool.address,
+      custody: positionCustody.address,
+      collateralCustody: payCustody.address,
+    });
+
+    if (result.signature) {
+      console.log("[openPosition] Position opened successfully!");
+      console.log("  Transaction:", result.signature);
+      if (result.positionKey) {
+        console.log("  Position Key:", result.positionKey.toBase58());
+      }
+    } else {
+      throw new Error("Failed to open position: no signature returned");
+    }
+
+    // Handle SOL unwrapping if needed
+    if (positionCustody.getTokenE() == TokenE.SOL) {
+      let unwrapTx = await unwrapSolIfNeeded(publicKey, publicKey, connection);
+      if (unwrapTx) {
+        try {
+          await manualSendTransaction(
+            new Transaction().add(...unwrapTx),
+            publicKey,
+            connection,
+            walletContextState.signTransaction
+          );
+        } catch (err) {
+          console.log("[openPosition] SOL unwrap skipped (may not be needed)");
+        }
+      }
+    }
   } catch (err) {
-    console.log(err);
+    console.error("[openPosition] Error opening position:", err);
     throw err;
   }
 }

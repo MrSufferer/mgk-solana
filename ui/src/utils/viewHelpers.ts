@@ -130,11 +130,12 @@ export class ViewHelper {
     positionAmount: number,
     side: Side,
     pool: PoolAccount,
-    custody: CustodyAccount
+    custody: CustodyAccount,
+    collateralCustody: CustodyAccount
   ): Promise<PriceAndFee> => {
     let program = new Program(IDL, this.provider);
 
-    let collateral = new BN(payAmount * 10 ** custody.decimals);
+    let collateral = new BN(payAmount * 10 ** collateralCustody.decimals);
     let size = new BN(positionAmount * 10 ** custody.decimals);
 
     console.log("entry params", payAmount, positionAmount, side);
@@ -150,6 +151,8 @@ export class ViewHelper {
         pool: pool.address,
         custody: custody.address,
         custodyOracleAccount: custody.oracle.oracleAccount,
+        collateralCustody: collateralCustody.address,
+        collateralCustodyOracleAccount: collateralCustody.oracle.oracleAccount,
       })
       .transaction();
 
