@@ -7,8 +7,6 @@ import {
   awaitComputationFinalization,
   getArciumEnv,
   getCompDefAccOffset,
-  uploadCircuit,
-  buildFinalizeCompDefTx,
   RescueCipher,
   deserializeLE,
   getMXEAccAddress,
@@ -29,12 +27,12 @@ import { expect } from "chai";
 /**
  * Configuration for Arcium Perpetuals DEX Tests
  * 
- * Default: LOCALNET
- * To run tests on localnet (default):
+ * Default: DEVNET
+ * To run tests on devnet (default):
  *   arcium test
  * 
- * To run tests on devnet:
- *   USE_LOCALNET=false arcium test
+ * To run tests on localnet:
+ *   USE_LOCALNET=true arcium test
  * 
  * For devnet, you can set a custom RPC URL via RPC_URL environment variable.
  * Recommended RPC providers: Helius, QuickNode
@@ -43,15 +41,15 @@ import { expect } from "chai";
  *   RPC_URL=https://devnet.helius-rpc.com/?api-key=<your-key> arcium test
  * 
  * Cluster offsets for devnet:
- *   - 1078779259 (v0.3.0) - default
+ *   - 1078779259 (v0.3.0)
  *   - 3726127828 (v0.3.0)
- *   - 768109697 (v0.4.0)
+ *   - 768109697 (v0.4.0) - default
  * 
  * See: https://docs.arcium.com/developers/deployment
  */
 
-// Configuration: Set to true to use localnet (default), false for devnet
-const USE_LOCALNET = process.env.USE_LOCALNET === "false" ? false : true;
+// Configuration: Set to true to use localnet, false for devnet (default)
+const USE_LOCALNET = true;
 
 // Arcium cluster offset for devnet (v0.4.0)
 // Available offsets include: 768109697 (v0.4.0)
@@ -87,7 +85,7 @@ describe("Perpetuals DEX", () => {
     // Devnet configuration (default)
     console.log("🔧 Using DEVNET configuration (default)");
     const connection = new Connection(
-      process.env.RPC_URL || "https://api.devnet.solana.com",
+      process.env.RPC_URL || "https://devnet.helius-rpc.com/?api-key=e54967e8-b0d7-49cf-9c7a-e42735441dc7",
       "confirmed"
     );
     const wallet = new anchor.Wallet(owner);
@@ -114,19 +112,22 @@ describe("Perpetuals DEX", () => {
   type Event = anchor.IdlEvents<(typeof program)["idl"]>;
   const awaitEvent = async <E extends keyof Event>(
     eventName: E,
-    timeout = 60000
+    timeout = 300000  // Increased to 5 minutes for devnet
   ): Promise<Event[E]> => {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`Timeout waiting for event: ${String(eventName)}`));
-      }, timeout);
-
-      const listener = program.addEventListener(eventName, (event) => {
-        clearTimeout(timer);
-        program.removeEventListener(listener);
-        resolve(event as Event[E]);
+    let listenerId: number;
+    let timeoutId: NodeJS.Timeout;
+    const event = await new Promise<Event[E]>((res, rej) => {
+      listenerId = program.addEventListener(eventName as any, (event) => {
+        if (timeoutId) clearTimeout(timeoutId);
+        res(event);
       });
+      timeoutId = setTimeout(() => {
+        program.removeEventListener(listenerId);
+        rej(new Error(`Event ${String(eventName)} timed out after ${timeout}ms`));
+      }, timeout);
     });
+    await program.removeEventListener(listenerId);
+    return event;
   };
 
   it("Initializes open_position computation definition", async () => {
@@ -150,7 +151,6 @@ describe("Perpetuals DEX", () => {
       // Not initialized, proceed
     }
 
-    // Initialize comp def
     const mxeAcc = getMXEAccAddress(program.programId);
     const initSig = await program.methods
       .initOpenPositionCompDef()
@@ -162,38 +162,7 @@ describe("Perpetuals DEX", () => {
       .signers([owner])
       .rpc({ commitment: "confirmed" });
 
-    console.log("Init comp def signature:", initSig);
-
-    // Upload raw circuit for localnet
-    try {
-      const raw = fs.readFileSync("build/open_position.arcis");
-      await uploadCircuit(
-        provider as anchor.AnchorProvider,
-        "open_position",
-        program.programId,
-        raw,
-        true
-      );
-      console.log("Uploaded open_position circuit.");
-    } catch (e) {
-      console.warn("open_position circuit upload skipped or failed:", (e as Error).message);
-    }
-
-    // Finalize comp def
-    console.log("Finalizing open_position CompDef...");
-    const finalizeTx = await buildFinalizeCompDefTx(
-      provider as anchor.AnchorProvider,
-      Buffer.from(offset).readUInt32LE(),
-      program.programId
-    );
-    const latestBlockhash = await provider.connection.getLatestBlockhash();
-    finalizeTx.recentBlockhash = latestBlockhash.blockhash;
-    finalizeTx.lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
-    finalizeTx.sign(owner);
-    await provider.sendAndConfirm(finalizeTx, [owner], {
-      commitment: "confirmed",
-    });
-    console.log("open_position CompDef finalized.");
+    console.log("open_position CompDef initialized:", initSig);
   });
 
   it("Opens a position with encrypted size and collateral", async () => {
@@ -357,7 +326,6 @@ describe("Perpetuals DEX", () => {
       // Not initialized, proceed
     }
 
-    // Initialize comp def
     const mxeAcc = getMXEAccAddress(program.programId);
     const initSig = await program.methods
       .initCalculatePositionValueCompDef()
@@ -369,38 +337,7 @@ describe("Perpetuals DEX", () => {
       .signers([owner])
       .rpc({ commitment: "confirmed" });
 
-    console.log("Init comp def signature:", initSig);
-
-    // Upload raw circuit for localnet
-    try {
-      const raw = fs.readFileSync("build/calculate_position_value.arcis");
-      await uploadCircuit(
-        provider as anchor.AnchorProvider,
-        "calculate_position_value",
-        program.programId,
-        raw,
-        true
-      );
-      console.log("Uploaded calculate_position_value circuit.");
-    } catch (e) {
-      console.warn("calculate_position_value circuit upload skipped or failed:", (e as Error).message);
-    }
-
-    // Finalize comp def
-    console.log("Finalizing calculate_position_value CompDef...");
-    const finalizeTx = await buildFinalizeCompDefTx(
-      provider as anchor.AnchorProvider,
-      Buffer.from(offset).readUInt32LE(),
-      program.programId
-    );
-    const latestBlockhash = await provider.connection.getLatestBlockhash();
-    finalizeTx.recentBlockhash = latestBlockhash.blockhash;
-    finalizeTx.lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
-    finalizeTx.sign(owner);
-    await provider.sendAndConfirm(finalizeTx, [owner], {
-      commitment: "confirmed",
-    });
-    console.log("calculate_position_value CompDef finalized.");
+    console.log("calculate_position_value CompDef initialized:", initSig);
   });
 
   it("Calculates position value and PnL", async () => {
@@ -566,7 +503,6 @@ describe("Perpetuals DEX", () => {
       // Not initialized, proceed
     }
 
-    // Initialize comp def
     const mxeAcc = getMXEAccAddress(program.programId);
     const initSig = await program.methods
       .initClosePositionCompDef()
@@ -578,38 +514,7 @@ describe("Perpetuals DEX", () => {
       .signers([owner])
       .rpc({ commitment: "confirmed" });
 
-    console.log("Init comp def signature:", initSig);
-
-    // Upload raw circuit for localnet
-    try {
-      const raw = fs.readFileSync("build/close_position.arcis");
-      await uploadCircuit(
-        provider as anchor.AnchorProvider,
-        "close_position",
-        program.programId,
-        raw,
-        true
-      );
-      console.log("Uploaded close_position circuit.");
-    } catch (e) {
-      console.warn("close_position circuit upload skipped or failed:", (e as Error).message);
-    }
-
-    // Finalize comp def
-    console.log("Finalizing close_position CompDef...");
-    const finalizeTx = await buildFinalizeCompDefTx(
-      provider as anchor.AnchorProvider,
-      Buffer.from(offset).readUInt32LE(),
-      program.programId
-    );
-    const latestBlockhash = await provider.connection.getLatestBlockhash();
-    finalizeTx.recentBlockhash = latestBlockhash.blockhash;
-    finalizeTx.lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
-    finalizeTx.sign(owner);
-    await provider.sendAndConfirm(finalizeTx, [owner], {
-      commitment: "confirmed",
-    });
-    console.log("close_position CompDef finalized.");
+    console.log("close_position CompDef initialized:", initSig);
   });
 
   it("Closes a position and realizes PnL", async () => {
@@ -757,7 +662,9 @@ describe("Perpetuals DEX", () => {
       await program.account.computationDefinitionAccount.fetch(compDefAcc);
       console.log("add_collateral comp def already initialized, skipping");
       return;
-    } catch (e) {}
+    } catch (e) {
+      // Not initialized, proceed
+    }
 
     const mxeAcc = getMXEAccAddress(program.programId);
     const initSig = await program.methods
@@ -770,37 +677,7 @@ describe("Perpetuals DEX", () => {
       .signers([owner])
       .rpc({ commitment: "confirmed" });
 
-    console.log("Init comp def signature:", initSig);
-
-    // Upload raw circuit for localnet
-    try {
-      const raw = fs.readFileSync("build/add_collateral.arcis");
-      await uploadCircuit(
-        provider as anchor.AnchorProvider,
-        "add_collateral",
-        program.programId,
-        raw,
-        true
-      );
-      console.log("Uploaded add_collateral circuit.");
-    } catch (e) {
-      console.warn("add_collateral circuit upload skipped or failed:", (e as Error).message);
-    }
-
-    console.log("Finalizing add_collateral CompDef...");
-    const finalizeTx = await buildFinalizeCompDefTx(
-      provider as anchor.AnchorProvider,
-      Buffer.from(offset).readUInt32LE(),
-      program.programId
-    );
-    const latestBlockhash = await provider.connection.getLatestBlockhash();
-    finalizeTx.recentBlockhash = latestBlockhash.blockhash;
-    finalizeTx.lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
-    finalizeTx.sign(owner);
-    await provider.sendAndConfirm(finalizeTx, [owner], {
-      commitment: "confirmed",
-    });
-    console.log("add_collateral CompDef finalized.");
+    console.log("add_collateral CompDef initialized:", initSig);
   });
 
   it("Adds collateral to a position", async () => {
@@ -943,7 +820,9 @@ describe("Perpetuals DEX", () => {
       await program.account.computationDefinitionAccount.fetch(compDefAcc);
       console.log("liquidate comp def already initialized, skipping");
       return;
-    } catch (e) {}
+    } catch (e) {
+      // Not initialized, proceed
+    }
 
     const mxeAcc = getMXEAccAddress(program.programId);
     const initSig = await program.methods
@@ -956,37 +835,7 @@ describe("Perpetuals DEX", () => {
       .signers([owner])
       .rpc({ commitment: "confirmed" });
 
-    console.log("Init comp def signature:", initSig);
-
-    // Upload raw circuit for localnet
-    try {
-      const raw = fs.readFileSync("build/liquidate.arcis");
-      await uploadCircuit(
-        provider as anchor.AnchorProvider,
-        "liquidate",
-        program.programId,
-        raw,
-        true
-      );
-      console.log("Uploaded liquidate circuit.");
-    } catch (e) {
-      console.warn("liquidate circuit upload skipped or failed:", (e as Error).message);
-    }
-
-    console.log("Finalizing liquidate CompDef...");
-    const finalizeTx = await buildFinalizeCompDefTx(
-      provider as anchor.AnchorProvider,
-      Buffer.from(offset).readUInt32LE(),
-      program.programId
-    );
-    const latestBlockhash = await provider.connection.getLatestBlockhash();
-    finalizeTx.recentBlockhash = latestBlockhash.blockhash;
-    finalizeTx.lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
-    finalizeTx.sign(owner);
-    await provider.sendAndConfirm(finalizeTx, [owner], {
-      commitment: "confirmed",
-    });
-    console.log("liquidate CompDef finalized.");
+    console.log("liquidate CompDef initialized:", initSig);
   });
 
   it("Liquidates an underwater position", async () => {

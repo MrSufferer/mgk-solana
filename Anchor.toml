@@ -7,10 +7,10 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-perpetuals = "3xG4QD5fEj8THmKVZqAGcPiVEKMaT8hR8oUbNYWqV7jX"
+perpetuals = "8PrsDCQnKTyRXDaYq8v2SsjLyKr3UF8uP7RsGbKHYtuq"
 
 [programs.localnet]
-perpetuals = "4vHgG27xssZKvuoSnWZZAjWJda1RoM6VWZmHk3xE22md"
+perpetuals = "8PrsDCQnKTyRXDaYq8v2SsjLyKr3UF8uP7RsGbKHYtuq"
 
 [registry]
 url = "https://api.apr.dev"
@@ -22,7 +22,16 @@ wallet = "~/.config/solana/id.json"
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 'tests/**/!(helpers)/*.ts' 'tests/*.ts'"
 
-[test.validator]
+[test]
+startup_wait = 5000
+shutdown_wait = 2000
+upgradeable = false
+
 [[test.genesis]]
 address = "Bv3Fb9VjzjWGfX18QTUcVycAfeLoQ5zZN6vv2g3cTZxp"
 program = "/Users/kyler/repos/examples/mgk-perp/artifacts/arcium_program_0.4.0.so"
+
+[test.validator]
+bind_address = "0.0.0.0"
+ledger = ".anchor/test-ledger"
+rpc_port = 8899

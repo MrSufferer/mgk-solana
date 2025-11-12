@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
-use arcium_client::idl::arcium::types::CallbackAccount;
+use arcium_client::idl::arcium::types::{CallbackAccount, CircuitSource, OffChainCircuitSource};
 use anchor_spl::token::{Token, Mint, TokenAccount, Transfer, MintTo, Burn};
 
 pub mod state;
@@ -13,14 +13,22 @@ const COMP_DEF_OFFSET_ADD_COLLATERAL: u32 = comp_def_offset("add_collateral");
 const COMP_DEF_OFFSET_REMOVE_COLLATERAL: u32 = comp_def_offset("remove_collateral");
 const COMP_DEF_OFFSET_LIQUIDATE: u32 = comp_def_offset("liquidate");
 
-declare_id!("4vHgG27xssZKvuoSnWZZAjWJda1RoM6VWZmHk3xE22md");
+declare_id!("8PrsDCQnKTyRXDaYq8v2SsjLyKr3UF8uP7RsGbKHYtuq");
 
 #[arcium_program]
 pub mod perpetuals {
     use super::*;
 
     pub fn init_open_position_comp_def(ctx: Context<InitOpenPositionCompDef>) -> Result<()> {
-        init_comp_def(ctx.accounts, 0, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            0,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/open_position.arcis".to_string(),
+                hash: [0; 32], // Hash verification not enforced yet
+            })),
+            None,
+        )?;
         Ok(())
     }
 
@@ -128,7 +136,15 @@ pub mod perpetuals {
     pub fn init_calculate_position_value_comp_def(
         ctx: Context<InitCalculatePositionValueCompDef>,
     ) -> Result<()> {
-        init_comp_def(ctx.accounts, 0, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            0,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/calculate_position_value.arcis".to_string(),
+                hash: [0; 32], // Hash verification not enforced yet
+            })),
+            None,
+        )?;
         Ok(())
     }
 
@@ -195,7 +211,15 @@ pub mod perpetuals {
     }
 
     pub fn init_close_position_comp_def(ctx: Context<InitClosePositionCompDef>) -> Result<()> {
-        init_comp_def(ctx.accounts, 0, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            0,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/close_position.arcis".to_string(),
+                hash: [0; 32], // Hash verification not enforced yet
+            })),
+            None,
+        )?;
         Ok(())
     }
 
@@ -273,7 +297,15 @@ pub mod perpetuals {
     }
 
     pub fn init_add_collateral_comp_def(ctx: Context<InitAddCollateralCompDef>) -> Result<()> {
-        init_comp_def(ctx.accounts, 0, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            0,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/add_collateral.arcis".to_string(),
+                hash: [0; 32], // Hash verification not enforced yet
+            })),
+            None,
+        )?;
         Ok(())
     }
 
@@ -350,7 +382,15 @@ pub mod perpetuals {
     pub fn init_remove_collateral_comp_def(
         ctx: Context<InitRemoveCollateralCompDef>,
     ) -> Result<()> {
-        init_comp_def(ctx.accounts, 0, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            0,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/remove_collateral.arcis".to_string(),
+                hash: [0; 32], // Hash verification not enforced yet
+            })),
+            None,
+        )?;
         Ok(())
     }
 
@@ -432,7 +472,15 @@ pub mod perpetuals {
     pub fn init_liquidate_comp_def(
         ctx: Context<InitLiquidateCompDef>,
     ) -> Result<()> {
-        init_comp_def(ctx.accounts, 0, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            0,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/liquidate.arcis".to_string(),
+                hash: [0; 32], // Hash verification not enforced yet
+            })),
+            None,
+        )?;
         Ok(())
     }
 
