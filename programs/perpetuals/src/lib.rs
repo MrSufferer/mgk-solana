@@ -13,14 +13,14 @@ const COMP_DEF_OFFSET_ADD_COLLATERAL: u32 = comp_def_offset("add_collateral");
 const COMP_DEF_OFFSET_REMOVE_COLLATERAL: u32 = comp_def_offset("remove_collateral");
 const COMP_DEF_OFFSET_LIQUIDATE: u32 = comp_def_offset("liquidate");
 
-declare_id!("3xG4QD5fEj8THmKVZqAGcPiVEKMaT8hR8oUbNYWqV7jX");
+declare_id!("4vHgG27xssZKvuoSnWZZAjWJda1RoM6VWZmHk3xE22md");
 
 #[arcium_program]
 pub mod perpetuals {
     use super::*;
 
     pub fn init_open_position_comp_def(ctx: Context<InitOpenPositionCompDef>) -> Result<()> {
-        init_comp_def(ctx.accounts, true, 0, None, None)?;
+        init_comp_def(ctx.accounts, 0, None, None)?;
         Ok(())
     }
 
@@ -68,15 +68,17 @@ pub mod perpetuals {
             Argument::EncryptedU64(collateral_encrypted),
         ];
 
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
         queue_computation(
             ctx.accounts,
             computation_offset,
             args,
-            vec![CallbackAccount {
-                pubkey: position_key,
-                is_writable: true,
-            }],
             None,
+            vec![OpenPositionCallback::callback_ix(&[
+                CallbackAccount { pubkey: position_key, is_writable: true },
+            ])],
+            1,
         )?;
 
         Ok(())
@@ -89,7 +91,7 @@ pub mod perpetuals {
     ) -> Result<()> {
         let (size_output, collateral_output) = match output {
             ComputationOutputs::Success(OpenPositionOutput {
-                field_0: OpenPositionTupleStruct0 {
+                field_0: OpenPositionOutputStruct0 {
                     field_0: size,
                     field_1: collateral,
                 },
@@ -126,7 +128,7 @@ pub mod perpetuals {
     pub fn init_calculate_position_value_comp_def(
         ctx: Context<InitCalculatePositionValueCompDef>,
     ) -> Result<()> {
-        init_comp_def(ctx.accounts, true, 0, None, None)?;
+        init_comp_def(ctx.accounts, 0, None, None)?;
         Ok(())
     }
 
@@ -154,15 +156,17 @@ pub mod perpetuals {
             Argument::PlaintextU8(position.side as u8),
         ];
 
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
         queue_computation(
             ctx.accounts,
             computation_offset,
             args,
-            vec![CallbackAccount {
-                pubkey: position.key(),
-                is_writable: true,
-            }],
             None,
+            vec![CalculatePositionValueCallback::callback_ix(&[
+                CallbackAccount { pubkey: position.key(), is_writable: true },
+            ])],
+            1,
         )?;
 
         Ok(())
@@ -191,7 +195,7 @@ pub mod perpetuals {
     }
 
     pub fn init_close_position_comp_def(ctx: Context<InitClosePositionCompDef>) -> Result<()> {
-        init_comp_def(ctx.accounts, true, 0, None, None)?;
+        init_comp_def(ctx.accounts, 0, None, None)?;
         Ok(())
     }
 
@@ -225,15 +229,17 @@ pub mod perpetuals {
             Argument::PlaintextU8(position.side as u8),
         ];
 
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
         queue_computation(
             ctx.accounts,
             computation_offset,
             args,
-            vec![CallbackAccount {
-                pubkey: position.key(),
-                is_writable: true,
-            }],
             None,
+            vec![ClosePositionCallback::callback_ix(&[
+                CallbackAccount { pubkey: position.key(), is_writable: true },
+            ])],
+            1,
         )?;
 
         Ok(())
@@ -267,7 +273,7 @@ pub mod perpetuals {
     }
 
     pub fn init_add_collateral_comp_def(ctx: Context<InitAddCollateralCompDef>) -> Result<()> {
-        init_comp_def(ctx.accounts, true, 0, None, None)?;
+        init_comp_def(ctx.accounts, 0, None, None)?;
         Ok(())
     }
 
@@ -298,15 +304,17 @@ pub mod perpetuals {
             Argument::Account(position.key(), 8 + 32 + 8 + 1, 32), // size_usd_encrypted
         ];
 
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
         queue_computation(
             ctx.accounts,
             computation_offset,
             args,
-            vec![CallbackAccount {
-                pubkey: position.key(),
-                is_writable: true,
-            }],
             None,
+            vec![AddCollateralCallback::callback_ix(&[
+                CallbackAccount { pubkey: position.key(), is_writable: true },
+            ])],
+            1,
         )?;
 
         Ok(())
@@ -342,7 +350,7 @@ pub mod perpetuals {
     pub fn init_remove_collateral_comp_def(
         ctx: Context<InitRemoveCollateralCompDef>,
     ) -> Result<()> {
-        init_comp_def(ctx.accounts, true, 0, None, None)?;
+        init_comp_def(ctx.accounts, 0, None, None)?;
         Ok(())
     }
 
@@ -373,15 +381,17 @@ pub mod perpetuals {
             Argument::Account(position.key(), 8 + 32 + 8 + 1, 32), // size_usd_encrypted
         ];
 
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
         queue_computation(
             ctx.accounts,
             computation_offset,
             args,
-            vec![CallbackAccount {
-                pubkey: position.key(),
-                is_writable: true,
-            }],
             None,
+            vec![RemoveCollateralCallback::callback_ix(&[
+                CallbackAccount { pubkey: position.key(), is_writable: true },
+            ])],
+            1,
         )?;
 
         Ok(())
@@ -422,7 +432,7 @@ pub mod perpetuals {
     pub fn init_liquidate_comp_def(
         ctx: Context<InitLiquidateCompDef>,
     ) -> Result<()> {
-        init_comp_def(ctx.accounts, true, 0, None, None)?;
+        init_comp_def(ctx.accounts, 0, None, None)?;
         Ok(())
     }
 
@@ -458,15 +468,17 @@ pub mod perpetuals {
             Argument::PlaintextU8(side),
         ];
 
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
         queue_computation(
             ctx.accounts,
             computation_offset,
             args,
-            vec![CallbackAccount {
-                pubkey: position_key,
-                is_writable: true,
-            }],
             None,
+            vec![LiquidateCallback::callback_ix(&[
+                CallbackAccount { pubkey: position_key, is_writable: true },
+            ])],
+            1,
         )?;
 
         Ok(())
@@ -1675,6 +1687,15 @@ pub struct OpenPosition<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, SignerAccount>,
+    #[account(
         address = derive_mxe_pda!()
     )]
     pub mxe_account: Account<'info, MXEAccount>,
@@ -1702,7 +1723,7 @@ pub struct OpenPosition<'info> {
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(
         mut,
-        address = derive_cluster_pda!(mxe_account)
+        address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     pub cluster_account: Account<'info, Cluster>,
     #[account(
@@ -1726,11 +1747,9 @@ pub struct OpenPosition<'info> {
     pub position: Account<'info, Position>,
 }
 
-#[callback_accounts("open_position", payer)]
+#[callback_accounts("open_position")]
 #[derive(Accounts)]
 pub struct OpenPositionCallback<'info> {
-    #[account(mut)]
-    pub payer: Signer<'info>,
     pub arcium_program: Program<'info, Arcium>,
     #[account(
         address = derive_comp_def_pda!(COMP_DEF_OFFSET_OPEN_POSITION)
@@ -1767,6 +1786,15 @@ pub struct CalculatePositionValue<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, SignerAccount>,
+    #[account(
         address = derive_mxe_pda!()
     )]
     pub mxe_account: Account<'info, MXEAccount>,
@@ -1794,7 +1822,7 @@ pub struct CalculatePositionValue<'info> {
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(
         mut,
-        address = derive_cluster_pda!(mxe_account)
+        address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     pub cluster_account: Account<'info, Cluster>,
     #[account(
@@ -1816,11 +1844,9 @@ pub struct CalculatePositionValue<'info> {
     pub position: Account<'info, Position>,
 }
 
-#[callback_accounts("calculate_position_value", payer)]
+#[callback_accounts("calculate_position_value")]
 #[derive(Accounts)]
 pub struct CalculatePositionValueCallback<'info> {
-    #[account(mut)]
-    pub payer: Signer<'info>,
     pub arcium_program: Program<'info, Arcium>,
     #[account(
         address = derive_comp_def_pda!(COMP_DEF_OFFSET_CALCULATE_POSITION_VALUE)
@@ -1859,6 +1885,15 @@ pub struct ClosePosition<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, SignerAccount>,
+    #[account(
         address = derive_mxe_pda!()
     )]
     pub mxe_account: Account<'info, MXEAccount>,
@@ -1886,7 +1921,7 @@ pub struct ClosePosition<'info> {
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(
         mut,
-        address = derive_cluster_pda!(mxe_account)
+        address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     pub cluster_account: Account<'info, Cluster>,
     #[account(
@@ -1908,11 +1943,9 @@ pub struct ClosePosition<'info> {
     pub position: Account<'info, Position>,
 }
 
-#[callback_accounts("close_position", payer)]
+#[callback_accounts("close_position")]
 #[derive(Accounts)]
 pub struct ClosePositionCallback<'info> {
-    #[account(mut)]
-    pub payer: Signer<'info>,
     pub arcium_program: Program<'info, Arcium>,
     #[account(
         address = derive_comp_def_pda!(COMP_DEF_OFFSET_CLOSE_POSITION)
@@ -1951,6 +1984,15 @@ pub struct AddCollateral<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, SignerAccount>,
+    #[account(
         address = derive_mxe_pda!()
     )]
     pub mxe_account: Account<'info, MXEAccount>,
@@ -1978,7 +2020,7 @@ pub struct AddCollateral<'info> {
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(
         mut,
-        address = derive_cluster_pda!(mxe_account)
+        address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     pub cluster_account: Account<'info, Cluster>,
     #[account(
@@ -2000,11 +2042,9 @@ pub struct AddCollateral<'info> {
     pub position: Account<'info, Position>,
 }
 
-#[callback_accounts("add_collateral", payer)]
+#[callback_accounts("add_collateral")]
 #[derive(Accounts)]
 pub struct AddCollateralCallback<'info> {
-    #[account(mut)]
-    pub payer: Signer<'info>,
     pub arcium_program: Program<'info, Arcium>,
     #[account(
         address = derive_comp_def_pda!(COMP_DEF_OFFSET_ADD_COLLATERAL)
@@ -2043,6 +2083,15 @@ pub struct RemoveCollateral<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, SignerAccount>,
+    #[account(
         address = derive_mxe_pda!()
     )]
     pub mxe_account: Account<'info, MXEAccount>,
@@ -2070,7 +2119,7 @@ pub struct RemoveCollateral<'info> {
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(
         mut,
-        address = derive_cluster_pda!(mxe_account)
+        address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     pub cluster_account: Account<'info, Cluster>,
     #[account(
@@ -2092,11 +2141,9 @@ pub struct RemoveCollateral<'info> {
     pub position: Account<'info, Position>,
 }
 
-#[callback_accounts("remove_collateral", payer)]
+#[callback_accounts("remove_collateral")]
 #[derive(Accounts)]
 pub struct RemoveCollateralCallback<'info> {
-    #[account(mut)]
-    pub payer: Signer<'info>,
     pub arcium_program: Program<'info, Arcium>,
     #[account(
         address = derive_comp_def_pda!(COMP_DEF_OFFSET_REMOVE_COLLATERAL)
@@ -2136,6 +2183,15 @@ pub struct Liquidate<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [&SIGN_PDA_SEED],
+        bump,
+        address = derive_sign_pda!(),
+    )]
+    pub sign_pda_account: Account<'info, SignerAccount>,
+    #[account(
         address = derive_mxe_pda!()
     )]
     pub mxe_account: Account<'info, MXEAccount>,
@@ -2163,7 +2219,7 @@ pub struct Liquidate<'info> {
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(
         mut,
-        address = derive_cluster_pda!(mxe_account)
+        address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     pub cluster_account: Account<'info, Cluster>,
     #[account(
@@ -2185,11 +2241,9 @@ pub struct Liquidate<'info> {
     pub position: Account<'info, Position>,
 }
 
-#[callback_accounts("liquidate", payer)]
+#[callback_accounts("liquidate")]
 #[derive(Accounts)]
 pub struct LiquidateCallback<'info> {
-    #[account(mut)]
-    pub payer: Signer<'info>,
     pub arcium_program: Program<'info, Arcium>,
     #[account(
         address = derive_comp_def_pda!(COMP_DEF_OFFSET_LIQUIDATE)

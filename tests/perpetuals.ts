@@ -29,12 +29,12 @@ import { expect } from "chai";
 /**
  * Configuration for Arcium Perpetuals DEX Tests
  * 
- * Default: DEVNET
- * To run tests on devnet (default):
+ * Default: LOCALNET
+ * To run tests on localnet (default):
  *   arcium test
  * 
- * To run tests locally:
- *   USE_LOCALNET=true arcium test
+ * To run tests on devnet:
+ *   USE_LOCALNET=false arcium test
  * 
  * For devnet, you can set a custom RPC URL via RPC_URL environment variable.
  * Recommended RPC providers: Helius, QuickNode
@@ -50,12 +50,12 @@ import { expect } from "chai";
  * See: https://docs.arcium.com/developers/deployment
  */
 
-// Configuration: Set to true to use localnet, false (default) for devnet
-const USE_LOCALNET = process.env.USE_LOCALNET === "true" || false;
+// Configuration: Set to true to use localnet (default), false for devnet
+const USE_LOCALNET = process.env.USE_LOCALNET === "false" ? false : true;
 
-// Arcium cluster offset for devnet (v0.3.0)
-// Available offsets: 1078779259 (v0.3.0), 3726127828 (v0.3.0), 768109697 (v0.4.0)
-const ARCIUM_CLUSTER_OFFSET = 1078779259;
+// Arcium cluster offset for devnet (v0.4.0)
+// Available offsets include: 768109697 (v0.4.0)
+const ARCIUM_CLUSTER_OFFSET = 768109697;
 
 // Helper to read keypair from file
 function readKpJson(path: string) {
@@ -163,6 +163,21 @@ describe("Perpetuals DEX", () => {
       .rpc({ commitment: "confirmed" });
 
     console.log("Init comp def signature:", initSig);
+
+    // Upload raw circuit for localnet
+    try {
+      const raw = fs.readFileSync("build/open_position.arcis");
+      await uploadCircuit(
+        provider as anchor.AnchorProvider,
+        "open_position",
+        program.programId,
+        raw,
+        true
+      );
+      console.log("Uploaded open_position circuit.");
+    } catch (e) {
+      console.warn("open_position circuit upload skipped or failed:", (e as Error).message);
+    }
 
     // Finalize comp def
     console.log("Finalizing open_position CompDef...");
@@ -355,6 +370,21 @@ describe("Perpetuals DEX", () => {
       .rpc({ commitment: "confirmed" });
 
     console.log("Init comp def signature:", initSig);
+
+    // Upload raw circuit for localnet
+    try {
+      const raw = fs.readFileSync("build/calculate_position_value.arcis");
+      await uploadCircuit(
+        provider as anchor.AnchorProvider,
+        "calculate_position_value",
+        program.programId,
+        raw,
+        true
+      );
+      console.log("Uploaded calculate_position_value circuit.");
+    } catch (e) {
+      console.warn("calculate_position_value circuit upload skipped or failed:", (e as Error).message);
+    }
 
     // Finalize comp def
     console.log("Finalizing calculate_position_value CompDef...");
@@ -550,6 +580,21 @@ describe("Perpetuals DEX", () => {
 
     console.log("Init comp def signature:", initSig);
 
+    // Upload raw circuit for localnet
+    try {
+      const raw = fs.readFileSync("build/close_position.arcis");
+      await uploadCircuit(
+        provider as anchor.AnchorProvider,
+        "close_position",
+        program.programId,
+        raw,
+        true
+      );
+      console.log("Uploaded close_position circuit.");
+    } catch (e) {
+      console.warn("close_position circuit upload skipped or failed:", (e as Error).message);
+    }
+
     // Finalize comp def
     console.log("Finalizing close_position CompDef...");
     const finalizeTx = await buildFinalizeCompDefTx(
@@ -727,6 +772,21 @@ describe("Perpetuals DEX", () => {
 
     console.log("Init comp def signature:", initSig);
 
+    // Upload raw circuit for localnet
+    try {
+      const raw = fs.readFileSync("build/add_collateral.arcis");
+      await uploadCircuit(
+        provider as anchor.AnchorProvider,
+        "add_collateral",
+        program.programId,
+        raw,
+        true
+      );
+      console.log("Uploaded add_collateral circuit.");
+    } catch (e) {
+      console.warn("add_collateral circuit upload skipped or failed:", (e as Error).message);
+    }
+
     console.log("Finalizing add_collateral CompDef...");
     const finalizeTx = await buildFinalizeCompDefTx(
       provider as anchor.AnchorProvider,
@@ -897,6 +957,21 @@ describe("Perpetuals DEX", () => {
       .rpc({ commitment: "confirmed" });
 
     console.log("Init comp def signature:", initSig);
+
+    // Upload raw circuit for localnet
+    try {
+      const raw = fs.readFileSync("build/liquidate.arcis");
+      await uploadCircuit(
+        provider as anchor.AnchorProvider,
+        "liquidate",
+        program.programId,
+        raw,
+        true
+      );
+      console.log("Uploaded liquidate circuit.");
+    } catch (e) {
+      console.warn("liquidate circuit upload skipped or failed:", (e as Error).message);
+    }
 
     console.log("Finalizing liquidate CompDef...");
     const finalizeTx = await buildFinalizeCompDefTx(
