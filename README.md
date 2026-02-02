@@ -4,15 +4,16 @@ Privacy-preserving perpetual futures DEX on Solana using **Arcium MPC** for encr
 
 ## Architecture
 
-**Peer-to-Mixer-Pool Design:**
-- Encrypted position aggregation via MPC
-- Pool-based liquidity (sees only aggregated net OI)
-- Individual positions remain private
+**Commitment-Based Shielded Pool:**
+- Positions stored as cryptographic commitments (no trader link)
+- MPC validates ownership and aggregates positions
+- Pool sees only aggregated net OI, never individual positions
+- True unlinkability: cannot link deposits to withdrawals
 
-We explored multiple approaches before settling on mixer pool. See architecture docs for details.
+Adapted from mixer concepts (Tornado Cash) for perpetuals' unique needs: stateful positions, dynamic updates, risk management. See architecture docs for details.
 
 **Documentation:**
-- [MIXER_POOL_ARCHITECTURE.md](./MIXER_POOL_ARCHITECTURE.md) - Chosen architecture
+- [MIXER_POOL_ARCHITECTURE.md](./MIXER_POOL_ARCHITECTURE.md) - Shielded pool with commitments
 - [ORDERBOOK_ARCHITECTURE.md](./ORDERBOOK_ARCHITECTURE.md) - Orderbook matching system (in development)
 - [ARCIUM_PRIVATE_PERPS_ARCHITECTURE.md](./ARCIUM_PRIVATE_PERPS_ARCHITECTURE.md) - Original spec
 
@@ -42,15 +43,15 @@ cd .. && arcium test
 
 **Completed:**
 - Core pool system with encrypted positions
-- Mixer pool architecture and MPC instructions
+- Shielded pool architecture design (commitment-based)
 - Orderbook matching framework (incomplete)
 - Solana program with both systems
 
 **In Progress:**
-- MPC circuit deployment (`mix_positions.arcis`)
-- Client-side encryption utilities
-- Full pool integration
-- Orderbook matching algorithm implementation
+- Commitment system implementation (Merkle tree/set storage)
+- MPC commitment validation instructions
+- Position update flow via commitments
+- Pool aggregation from commitments
 
 **Future:**
 - Multi-market shielded pools support
