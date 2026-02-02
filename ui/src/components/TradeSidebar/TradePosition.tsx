@@ -172,44 +172,55 @@ export function TradePosition(props: Props) {
 
       // console.log("after check in trade amounts", payAmount, positionAmount);
 
-      let { perpetual_program } = await getPerpetualProgramAndProvider(
-        walletContextState
-      );
+      try {
+        let { perpetual_program } = await getPerpetualProgramAndProvider(
+          walletContextState
+        );
 
-      const View = new ViewHelper(
-        perpetual_program.provider.connection,
-        perpetual_program.provider
-      );
+        const View = new ViewHelper(
+          perpetual_program.provider.connection,
+          perpetual_program.provider
+        );
 
-      const custody = pool!.getCustodyAccount(positionToken);
-      if (!custody) {
-        console.error(`No custody found for token: ${positionToken}`);
-        return;
+        const custody = pool!.getCustodyAccount(positionToken);
+        if (!custody) {
+          console.error(`No custody found for token: ${positionToken}`);
+          setPendingRateConversion(false);
+          return;
+        }
+
+        const collateralCustody = pool!.getCustodyAccount(payToken);
+        if (!collateralCustody) {
+          console.error(`No custody found for collateral token: ${payToken}`);
+          setPendingRateConversion(false);
+          return;
+        }
+
+        let getEntryPrice = await View.getEntryPriceAndFee(
+          payAmount * conversionRatio,
+          positionAmount,
+          props.side,
+          pool!,
+          custody,
+          collateralCustody
+        );
+
+        // console.log("get entry values", getEntryPrice);
+        // console.log("entry price", Number(getEntryPrice.entryPrice) / 10 ** 6);
+
+        setEntryPrice(Number(getEntryPrice.entryPrice) / 10 ** 6);
+        setLiquidationPrice(Number(getEntryPrice.liquidationPrice) / 10 ** 6);
+        setFee(Number(getEntryPrice.fee) / 10 ** 9);
+      } catch (error) {
+        // Silently handle errors during user input - simulation may fail for invalid amounts
+        console.debug("Failed to fetch entry price and fee:", error);
+        // Reset values to prevent showing stale data
+        setEntryPrice(0);
+        setLiquidationPrice(0);
+        setFee(0);
+      } finally {
+        setPendingRateConversion(false);
       }
-
-      const collateralCustody = pool!.getCustodyAccount(payToken);
-      if (!collateralCustody) {
-        console.error(`No custody found for collateral token: ${payToken}`);
-        return;
-      }
-
-      let getEntryPrice = await View.getEntryPriceAndFee(
-        payAmount * conversionRatio,
-        positionAmount,
-        props.side,
-        pool!,
-        custody,
-        collateralCustody
-      );
-
-      // console.log("get entry values", getEntryPrice);
-      // console.log("entry price", Number(getEntryPrice.entryPrice) / 10 ** 6);
-
-      setEntryPrice(Number(getEntryPrice.entryPrice) / 10 ** 6);
-      setLiquidationPrice(Number(getEntryPrice.liquidationPrice) / 10 ** 6);
-      setFee(Number(getEntryPrice.fee) / 10 ** 9);
-
-      setPendingRateConversion(false);
     }
 
     if (pool && props.side) {

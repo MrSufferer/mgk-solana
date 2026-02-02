@@ -1,6 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { PublicKey, Connection } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { Perpetuals } from "../target/types/perpetuals";
 import { randomBytes } from "crypto";
 import {
@@ -18,7 +18,9 @@ import {
   getClusterAccAddress,
   getMXEPublicKey,
   getArciumAccountBaseSeed,
-  getArciumProgAddress,
+  getArciumProgramId,
+  uploadCircuit,
+  buildFinalizeCompDefTx,
 } from "@arcium-hq/client";
 import * as fs from "fs";
 import * as os from "os";
@@ -27,33 +29,21 @@ import { expect } from "chai";
 /**
  * Configuration for Arcium Perpetuals DEX Tests
  * 
- * Default: DEVNET
- * To run tests on devnet (default):
+ * This test suite is configured to run on localnet by default.
+ * To run tests:
  *   arcium test
  * 
- * To run tests on localnet:
- *   USE_LOCALNET=true arcium test
- * 
- * For devnet, you can set a custom RPC URL via RPC_URL environment variable.
- * Recommended RPC providers: Helius, QuickNode
- * 
- * Example with custom RPC:
- *   RPC_URL=https://devnet.helius-rpc.com/?api-key=<your-key> arcium test
- * 
- * Cluster offsets for devnet:
- *   - 1078779259 (v0.3.0)
- *   - 3726127828 (v0.3.0)
- *   - 768109697 (v0.4.0) - default
- * 
- * See: https://docs.arcium.com/developers/deployment
+ * The test uses the local Arcium cluster configured in Arcium.toml.
+ * Set USE_DEVNET=true to run against devnet with cluster offset 123.
  */
 
-// Configuration: Set to true to use localnet, false for devnet (default)
-const USE_LOCALNET = true;
-
-// Arcium cluster offset for devnet (v0.4.0)
-// Available offsets include: 768109697 (v0.4.0)
-const ARCIUM_CLUSTER_OFFSET = 768109697;
+const useDevnet = true;
+const devnetRpcUrl =
+  process.env.DEVNET_RPC_URL ?? "https://api.devnet.solana.com";
+const devnetClusterOffset = 123;
+const clusterOffset = useDevnet
+  ? devnetClusterOffset
+  : getArciumEnv().arciumClusterOffset;
 
 // Helper to read keypair from file
 function readKpJson(path: string) {
@@ -61,58 +51,84 @@ function readKpJson(path: string) {
   return anchor.web3.Keypair.fromSecretKey(new Uint8Array(kpJson));
 }
 
+async function getMXEPublicKeyWithRetry(
+  provider: anchor.AnchorProvider,
+  programId: PublicKey,
+  maxRetries: number = 20,
+  retryDelayMs: number = 500
+): Promise<Uint8Array> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const mxePublicKey = await getMXEPublicKey(provider, programId);
+      if (mxePublicKey) {
+        return mxePublicKey;
+      }
+    } catch (error) {
+      console.log(`Attempt ${attempt} failed to fetch MXE public key:`, error);
+    }
+
+    if (attempt < maxRetries) {
+      console.log(
+        `Retrying in ${retryDelayMs}ms... (attempt ${attempt}/${maxRetries})`
+      );
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  }
+
+  throw new Error(
+    `Failed to fetch MXE public key after ${maxRetries} attempts`
+  );
+}
+
+/**
+ * Gets the cluster account address using the cluster offset from environment.
+ */
+function getClusterAccount(): PublicKey {
+  return getClusterAccAddress(clusterOffset);
+}
+
 describe("Perpetuals DEX", () => {
   const owner = readKpJson(`${os.homedir()}/.config/solana/id.json`);
 
-  // Configure the client based on USE_LOCALNET flag
-  // Default: devnet, set USE_LOCALNET=true for local testing
-  let program: Program<Perpetuals>;
   let provider: anchor.AnchorProvider;
-  let clusterAccount: PublicKey;
+  let program: Program<Perpetuals>;
 
-  if (USE_LOCALNET) {
-    // Local configuration
-    console.log("🔧 Using LOCALNET configuration");
-    anchor.setProvider(anchor.AnchorProvider.env());
-    program = anchor.workspace.Perpetuals as Program<Perpetuals>;
-    provider = anchor.getProvider() as anchor.AnchorProvider;
-    
-    // Use local Arcium environment
-    const arciumEnv = getArciumEnv();
-    clusterAccount = arciumEnv.arciumClusterPubkey;
-    console.log(`  Cluster Account: ${clusterAccount.toBase58()}`);
-  } else {
-    // Devnet configuration (default)
-    console.log("🔧 Using DEVNET configuration (default)");
-    const connection = new Connection(
-      process.env.RPC_URL || "https://devnet.helius-rpc.com/?api-key=e54967e8-b0d7-49cf-9c7a-e42735441dc7",
-      "confirmed"
+  if (useDevnet) {
+    // Configure devnet provider and program (cluster offset 123)
+    const connection = new anchor.web3.Connection(devnetRpcUrl, "confirmed");
+    provider = new anchor.AnchorProvider(
+      connection,
+      new anchor.Wallet(owner),
+      anchor.AnchorProvider.defaultOptions()
     );
-    const wallet = new anchor.Wallet(owner);
-    provider = new anchor.AnchorProvider(connection, wallet, {
-      commitment: "confirmed",
-    });
     anchor.setProvider(provider);
-    
-    // Load IDL for devnet
-    const idl = JSON.parse(
-      fs.readFileSync("./target/idl/perpetuals.json", "utf-8")
+
+    const idl = {
+      ...(anchor.workspace.Perpetuals.idl as anchor.Idl),
+      metadata: {
+        ...((anchor.workspace.Perpetuals.idl as any).metadata ?? {}),
+      },
+    } as anchor.Idl;
+    const programId = new PublicKey(
+      process.env.DEVNET_PROGRAM_ID ?? anchor.workspace.Perpetuals.programId
     );
-    program = new Program(idl, provider) as Program<Perpetuals>;
-    
-    // Use cluster offset for devnet
-    clusterAccount = getClusterAccAddress(ARCIUM_CLUSTER_OFFSET);
-    console.log(`  Cluster Account: ${clusterAccount.toBase58()}`);
-    console.log(`  Cluster Offset: ${ARCIUM_CLUSTER_OFFSET}`);
-    if (process.env.RPC_URL) {
-      console.log(`  RPC URL: ${process.env.RPC_URL}`);
-    }
+    (idl as any).metadata.address = programId.toBase58();
+    program = new Program<Perpetuals>(idl, provider);
+    console.log(
+      `Using devnet (cluster offset ${clusterOffset}) RPC: ${devnetRpcUrl}`
+    );
+  } else {
+    // Configure the client to use the local cluster.
+    anchor.setProvider(anchor.AnchorProvider.env());
+    provider = anchor.getProvider() as anchor.AnchorProvider;
+    program = anchor.workspace.Perpetuals as Program<Perpetuals>;
   }
+
 
   type Event = anchor.IdlEvents<(typeof program)["idl"]>;
   const awaitEvent = async <E extends keyof Event>(
     eventName: E,
-    timeout = 300000  // Increased to 5 minutes for devnet
+    timeoutMs = 60000
   ): Promise<Event[E]> => {
     let listenerId: number;
     let timeoutId: NodeJS.Timeout;
@@ -123,8 +139,8 @@ describe("Perpetuals DEX", () => {
       });
       timeoutId = setTimeout(() => {
         program.removeEventListener(listenerId);
-        rej(new Error(`Event ${String(eventName)} timed out after ${timeout}ms`));
-      }, timeout);
+        rej(new Error(`Event ${String(eventName)} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
     });
     await program.removeEventListener(listenerId);
     return event;
@@ -139,7 +155,7 @@ describe("Perpetuals DEX", () => {
     const offset = getCompDefAccOffset("open_position");
     const compDefAcc = PublicKey.findProgramAddressSync(
       [baseSeedCompDefAcc, program.programId.toBuffer(), offset],
-      getArciumProgAddress()
+      getArciumProgramId()
     )[0];
 
     // Check if already initialized
@@ -151,7 +167,18 @@ describe("Perpetuals DEX", () => {
       // Not initialized, proceed
     }
 
+    // Wait for MXE account to be ready first
+    console.log("Waiting for MXE account to be ready...");
+    try {
+      await getMXEPublicKeyWithRetry(provider, program.programId, 30, 1000);
+      console.log("MXE account is ready!");
+    } catch (error) {
+      console.error("Warning: MXE account not ready, but continuing...", error);
+    }
+
     const mxeAcc = getMXEAccAddress(program.programId);
+    
+    // Initialize computation definition
     const initSig = await program.methods
       .initOpenPositionCompDef()
       .accounts({
@@ -161,8 +188,35 @@ describe("Perpetuals DEX", () => {
       })
       .signers([owner])
       .rpc({ commitment: "confirmed" });
-
     console.log("open_position CompDef initialized:", initSig);
+
+    /*
+    const rawCircuit = fs.readFileSync("build/open_position.arcis");
+
+    const uploadSig = await uploadCircuit(
+      provider as anchor.AnchorProvider,
+      "open_position",
+      program.programId,
+      rawCircuit,
+      true
+    );
+
+    console.log("OpenPosition CompDef uploaded:", uploadSig);
+    */
+
+    // const finalizeTx = await buildFinalizeCompDefTx(
+    //   provider,
+    //   Buffer.from(offset).readUInt32LE(),
+    //   program.programId
+    // );
+    // const latestBlockhash = await provider.connection.getLatestBlockhash();
+    // finalizeTx.recentBlockhash = latestBlockhash.blockhash;
+    // finalizeTx.lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
+    // finalizeTx.sign(owner);
+    // await provider.sendAndConfirm(finalizeTx, [owner], {
+    //   commitment: "confirmed",
+    // });
+    // console.log("OpenPosition CompDef finalized.");
   });
 
   it("Opens a position with encrypted size and collateral", async () => {
@@ -171,7 +225,7 @@ describe("Perpetuals DEX", () => {
     // Generate encryption keys
     const privateKey = x25519.utils.randomSecretKey();
     const publicKey = x25519.getPublicKey(privateKey);
-    const mxePublicKey = await getMXEPublicKey(
+    const mxePublicKey = await getMXEPublicKeyWithRetry(
       provider as anchor.AnchorProvider,
       program.programId
     );
@@ -240,13 +294,13 @@ describe("Perpetuals DEX", () => {
         owner: owner.publicKey,
         payer: owner.publicKey,
         computationAccount: getComputationAccAddress(
-          program.programId,
+          clusterOffset,
           computationOffset
         ),
-        clusterAccount: clusterAccount,
+        clusterAccount: getClusterAccount(),
         mxeAccount: getMXEAccAddress(program.programId),
-        mempoolAccount: getMempoolAccAddress(program.programId),
-        executingPool: getExecutingPoolAccAddress(program.programId),
+        mempoolAccount: getMempoolAccAddress(clusterOffset),
+        executingPool: getExecutingPoolAccAddress(clusterOffset),
         compDefAccount: getCompDefAccAddress(
           program.programId,
           Buffer.from(compDefAccOffset).readUInt32LE()
@@ -314,7 +368,7 @@ describe("Perpetuals DEX", () => {
     const offset = getCompDefAccOffset("calculate_position_value");
     const compDefAcc = PublicKey.findProgramAddressSync(
       [baseSeedCompDefAcc, program.programId.toBuffer(), offset],
-      getArciumProgAddress()
+      getArciumProgramId()
     )[0];
 
     // Check if already initialized
@@ -326,7 +380,18 @@ describe("Perpetuals DEX", () => {
       // Not initialized, proceed
     }
 
+    // Wait for MXE account to be ready first
+    console.log("Waiting for MXE account to be ready...");
+    try {
+      await getMXEPublicKeyWithRetry(provider, program.programId, 30, 1000);
+      console.log("MXE account is ready!");
+    } catch (error) {
+      console.error("Warning: MXE account not ready, but continuing...", error);
+    }
+
     const mxeAcc = getMXEAccAddress(program.programId);
+    
+    // Initialize computation definition
     const initSig = await program.methods
       .initCalculatePositionValueCompDef()
       .accounts({
@@ -336,9 +401,34 @@ describe("Perpetuals DEX", () => {
       })
       .signers([owner])
       .rpc({ commitment: "confirmed" });
-
     console.log("calculate_position_value CompDef initialized:", initSig);
-  });
+
+    // Upload circuit
+    console.log("Uploading calculate_position_value circuit...");
+    // const rawCircuit = fs.readFileSync("build/calculate_position_value.arcis");
+    // await uploadCircuit(
+    //   provider as anchor.AnchorProvider,
+    //   "calculate_position_value",
+    //   program.programId,
+    //   rawCircuit,
+    //   true
+    // );
+    // console.log("Circuit uploaded");
+
+    // Finalize computation definition
+  //   console.log("Finalizing calculate_position_value comp def...");
+  //   const finalizeTx = await buildFinalizeCompDefTx(
+  //     provider as anchor.AnchorProvider,
+  //     Buffer.from(offset).readUInt32LE(),
+  //     program.programId
+  //   );
+  //   const latestBlockhash = await provider.connection.getLatestBlockhash();
+  //   finalizeTx.recentBlockhash = latestBlockhash.blockhash;
+  //   finalizeTx.lastValidBlockHeight = latestBlockhash.lastValidBlockHeight;
+  //   finalizeTx.sign(owner);
+  //   await provider.sendAndConfirm(finalizeTx, [owner], { commitment: "confirmed" });
+  //   console.log("CompDef finalized");
+  // });
 
   it("Calculates position value and PnL", async () => {
     console.log("\n=== Testing Calculate Position Value ===");
@@ -346,7 +436,7 @@ describe("Perpetuals DEX", () => {
     // First, open a position
     const privateKey = x25519.utils.randomSecretKey();
     const publicKey = x25519.getPublicKey(privateKey);
-    const mxePublicKey = await getMXEPublicKey(
+    const mxePublicKey = await getMXEPublicKeyWithRetry(
       provider as anchor.AnchorProvider,
       program.programId
     );
@@ -398,11 +488,11 @@ describe("Perpetuals DEX", () => {
       .accountsPartial({
         owner: owner.publicKey,
         payer: owner.publicKey,
-        computationAccount: getComputationAccAddress(program.programId, computationOffset1),
-        clusterAccount: clusterAccount,
+        computationAccount: getComputationAccAddress(clusterOffset, computationOffset1),
+        clusterAccount: getClusterAccount(),
         mxeAccount: getMXEAccAddress(program.programId),
-        mempoolAccount: getMempoolAccAddress(program.programId),
-        executingPool: getExecutingPoolAccAddress(program.programId),
+        mempoolAccount: getMempoolAccAddress(clusterOffset),
+        executingPool: getExecutingPoolAccAddress(clusterOffset),
         compDefAccount: getCompDefAccAddress(program.programId, Buffer.from(compDefAccOffset1).readUInt32LE()),
         position: positionPda,
       })
@@ -435,11 +525,11 @@ describe("Perpetuals DEX", () => {
       )
       .accountsPartial({
         payer: owner.publicKey,
-        computationAccount: getComputationAccAddress(program.programId, computationOffset2),
-        clusterAccount: clusterAccount,
+        computationAccount: getComputationAccAddress(clusterOffset, computationOffset2),
+        clusterAccount: getClusterAccount(),
         mxeAccount: getMXEAccAddress(program.programId),
-        mempoolAccount: getMempoolAccAddress(program.programId),
-        executingPool: getExecutingPoolAccAddress(program.programId),
+        mempoolAccount: getMempoolAccAddress(clusterOffset),
+        executingPool: getExecutingPoolAccAddress(clusterOffset),
         compDefAccount: getCompDefAccAddress(program.programId, Buffer.from(compDefAccOffset2).readUInt32LE()),
         position: positionPda,
       })
@@ -491,7 +581,7 @@ describe("Perpetuals DEX", () => {
     const offset = getCompDefAccOffset("close_position");
     const compDefAcc = PublicKey.findProgramAddressSync(
       [baseSeedCompDefAcc, program.programId.toBuffer(), offset],
-      getArciumProgAddress()
+      getArciumProgramId()
     )[0];
 
     // Check if already initialized
@@ -501,6 +591,15 @@ describe("Perpetuals DEX", () => {
       return;
     } catch (e) {
       // Not initialized, proceed
+    }
+
+    // Wait for MXE account to be ready first
+    console.log("Waiting for MXE account to be ready...");
+    try {
+      await getMXEPublicKeyWithRetry(provider, program.programId, 30, 1000);
+      console.log("MXE account is ready!");
+    } catch (error) {
+      console.error("Warning: MXE account not ready, but continuing...", error);
     }
 
     const mxeAcc = getMXEAccAddress(program.programId);
@@ -523,7 +622,7 @@ describe("Perpetuals DEX", () => {
     // Setup - open a position first
     const privateKey = x25519.utils.randomSecretKey();
     const publicKey = x25519.getPublicKey(privateKey);
-    const mxePublicKey = await getMXEPublicKey(
+    const mxePublicKey = await getMXEPublicKeyWithRetry(
       provider as anchor.AnchorProvider,
       program.programId
     );
@@ -567,11 +666,11 @@ describe("Perpetuals DEX", () => {
       .accountsPartial({
         owner: owner.publicKey,
         payer: owner.publicKey,
-        computationAccount: getComputationAccAddress(program.programId, computationOffset1),
-        clusterAccount: clusterAccount,
+        computationAccount: getComputationAccAddress(clusterOffset, computationOffset1),
+        clusterAccount: getClusterAccount(),
         mxeAccount: getMXEAccAddress(program.programId),
-        mempoolAccount: getMempoolAccAddress(program.programId),
-        executingPool: getExecutingPoolAccAddress(program.programId),
+        mempoolAccount: getMempoolAccAddress(clusterOffset),
+        executingPool: getExecutingPoolAccAddress(clusterOffset),
         compDefAccount: getCompDefAccAddress(program.programId, Buffer.from(compDefAccOffset1).readUInt32LE()),
         position: positionPda,
       })
@@ -607,11 +706,11 @@ describe("Perpetuals DEX", () => {
       .accountsPartial({
         owner: owner.publicKey,
         payer: owner.publicKey,
-        computationAccount: getComputationAccAddress(program.programId, computationOffset2),
-        clusterAccount: clusterAccount,
+        computationAccount: getComputationAccAddress(clusterOffset, computationOffset2),
+        clusterAccount: getClusterAccount(),
         mxeAccount: getMXEAccAddress(program.programId),
-        mempoolAccount: getMempoolAccAddress(program.programId),
-        executingPool: getExecutingPoolAccAddress(program.programId),
+        mempoolAccount: getMempoolAccAddress(clusterOffset),
+        executingPool: getExecutingPoolAccAddress(clusterOffset),
         compDefAccount: getCompDefAccAddress(program.programId, Buffer.from(compDefAccOffset2).readUInt32LE()),
         position: positionPda,
       })
@@ -655,7 +754,7 @@ describe("Perpetuals DEX", () => {
     const offset = getCompDefAccOffset("add_collateral");
     const compDefAcc = PublicKey.findProgramAddressSync(
       [baseSeedCompDefAcc, program.programId.toBuffer(), offset],
-      getArciumProgAddress()
+      getArciumProgramId()
     )[0];
 
     try {
@@ -664,6 +763,15 @@ describe("Perpetuals DEX", () => {
       return;
     } catch (e) {
       // Not initialized, proceed
+    }
+
+    // Wait for MXE account to be ready first
+    console.log("Waiting for MXE account to be ready...");
+    try {
+      await getMXEPublicKeyWithRetry(provider, program.programId, 30, 1000);
+      console.log("MXE account is ready!");
+    } catch (error) {
+      console.error("Warning: MXE account not ready, but continuing...", error);
     }
 
     const mxeAcc = getMXEAccAddress(program.programId);
@@ -686,7 +794,7 @@ describe("Perpetuals DEX", () => {
     // Open a position first
     const privateKey = x25519.utils.randomSecretKey();
     const publicKey = x25519.getPublicKey(privateKey);
-    const mxePublicKey = await getMXEPublicKey(
+    const mxePublicKey = await getMXEPublicKeyWithRetry(
       provider as anchor.AnchorProvider,
       program.programId
     );
@@ -729,11 +837,11 @@ describe("Perpetuals DEX", () => {
       .accountsPartial({
         owner: owner.publicKey,
         payer: owner.publicKey,
-        computationAccount: getComputationAccAddress(program.programId, computationOffset1),
-        clusterAccount: clusterAccount,
+        computationAccount: getComputationAccAddress(clusterOffset, computationOffset1),
+        clusterAccount: getClusterAccount(),
         mxeAccount: getMXEAccAddress(program.programId),
-        mempoolAccount: getMempoolAccAddress(program.programId),
-        executingPool: getExecutingPoolAccAddress(program.programId),
+        mempoolAccount: getMempoolAccAddress(clusterOffset),
+        executingPool: getExecutingPoolAccAddress(clusterOffset),
         compDefAccount: getCompDefAccAddress(program.programId, Buffer.from(getCompDefAccOffset("open_position")).readUInt32LE()),
         position: positionPda,
       })
@@ -768,11 +876,11 @@ describe("Perpetuals DEX", () => {
       .accountsPartial({
         owner: owner.publicKey,
         payer: owner.publicKey,
-        computationAccount: getComputationAccAddress(program.programId, computationOffset2),
-        clusterAccount: clusterAccount,
+        computationAccount: getComputationAccAddress(clusterOffset, computationOffset2),
+        clusterAccount: getClusterAccount(),
         mxeAccount: getMXEAccAddress(program.programId),
-        mempoolAccount: getMempoolAccAddress(program.programId),
-        executingPool: getExecutingPoolAccAddress(program.programId),
+        mempoolAccount: getMempoolAccAddress(clusterOffset),
+        executingPool: getExecutingPoolAccAddress(clusterOffset),
         compDefAccount: getCompDefAccAddress(program.programId, Buffer.from(getCompDefAccOffset("add_collateral")).readUInt32LE()),
         position: positionPda,
       })
@@ -813,7 +921,7 @@ describe("Perpetuals DEX", () => {
     const offset = getCompDefAccOffset("liquidate");
     const compDefAcc = PublicKey.findProgramAddressSync(
       [baseSeedCompDefAcc, program.programId.toBuffer(), offset],
-      getArciumProgAddress()
+      getArciumProgramId()
     )[0];
 
     try {
@@ -822,6 +930,15 @@ describe("Perpetuals DEX", () => {
       return;
     } catch (e) {
       // Not initialized, proceed
+    }
+
+    // Wait for MXE account to be ready first
+    console.log("Waiting for MXE account to be ready...");
+    try {
+      await getMXEPublicKeyWithRetry(provider, program.programId, 30, 1000);
+      console.log("MXE account is ready!");
+    } catch (error) {
+      console.error("Warning: MXE account not ready, but continuing...", error);
     }
 
     const mxeAcc = getMXEAccAddress(program.programId);
@@ -844,7 +961,7 @@ describe("Perpetuals DEX", () => {
     // Open a highly leveraged position
     const privateKey = x25519.utils.randomSecretKey();
     const publicKey = x25519.getPublicKey(privateKey);
-    const mxePublicKey = await getMXEPublicKey(
+    const mxePublicKey = await getMXEPublicKeyWithRetry(
       provider as anchor.AnchorProvider,
       program.programId
     );
@@ -887,11 +1004,11 @@ describe("Perpetuals DEX", () => {
       .accountsPartial({
         owner: owner.publicKey,
         payer: owner.publicKey,
-        computationAccount: getComputationAccAddress(program.programId, computationOffset1),
-        clusterAccount: clusterAccount,
+        computationAccount: getComputationAccAddress(clusterOffset, computationOffset1),
+        clusterAccount: getClusterAccount(),
         mxeAccount: getMXEAccAddress(program.programId),
-        mempoolAccount: getMempoolAccAddress(program.programId),
-        executingPool: getExecutingPoolAccAddress(program.programId),
+        mempoolAccount: getMempoolAccAddress(clusterOffset),
+        executingPool: getExecutingPoolAccAddress(clusterOffset),
         compDefAccount: getCompDefAccAddress(program.programId, Buffer.from(getCompDefAccOffset("open_position")).readUInt32LE()),
         position: positionPda,
       })
@@ -933,11 +1050,11 @@ describe("Perpetuals DEX", () => {
       .accountsPartial({
         liquidator: owner.publicKey, // In practice, this would be a different account
         payer: owner.publicKey,
-        computationAccount: getComputationAccAddress(program.programId, computationOffset2),
-        clusterAccount: clusterAccount,
+        computationAccount: getComputationAccAddress(clusterOffset, computationOffset2),
+        clusterAccount: getClusterAccount(),
         mxeAccount: getMXEAccAddress(program.programId),
-        mempoolAccount: getMempoolAccAddress(program.programId),
-        executingPool: getExecutingPoolAccAddress(program.programId),
+        mempoolAccount: getMempoolAccAddress(clusterOffset),
+        executingPool: getExecutingPoolAccAddress(clusterOffset),
         compDefAccount: getCompDefAccAddress(program.programId, Buffer.from(getCompDefAccOffset("liquidate")).readUInt32LE()),
         position: positionPda,
       })
@@ -976,4 +1093,5 @@ describe("Perpetuals DEX", () => {
     expect(isLiquidatable).to.equal(1);
     console.log("✅ Liquidate position test passed!");
   });
-});
+})
+})

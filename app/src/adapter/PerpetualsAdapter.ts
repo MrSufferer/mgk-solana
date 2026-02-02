@@ -10,6 +10,7 @@ import {
   getCompDefAccAddress,
   getCompDefAccOffset,
   getArciumEnv,
+  getClusterAccAddress,
 } from "@arcium-hq/client";
 
 import {
@@ -117,13 +118,13 @@ export class PerpetualsAdapter {
 
       const arciumEnv = getArciumEnv();
       const computationAccount = getComputationAccAddress(
-        this.program.programId,
+        arciumEnv.arciumClusterOffset,
         computationOffset
       );
-      const clusterAccount = arciumEnv.arciumClusterPubkey;
+      const clusterAccount = getClusterAccAddress(arciumEnv.arciumClusterOffset);
       const mxeAccount = getMXEAccAddress(this.program.programId);
-      const mempoolAccount = getMempoolAccAddress(this.program.programId);
-      const executingPool = getExecutingPoolAccAddress(this.program.programId);
+      const mempoolAccount = getMempoolAccAddress(arciumEnv.arciumClusterOffset);
+      const executingPool = getExecutingPoolAccAddress(arciumEnv.arciumClusterOffset);
       const compDefAccOffset = getCompDefAccOffset("open_position");
       const compDefAccount = getCompDefAccAddress(
         this.program.programId,
@@ -905,7 +906,7 @@ export class PerpetualsAdapter {
 
   private getClusterAccount(): PublicKey {
     const arciumEnv = getArciumEnv();
-    return arciumEnv.arciumClusterPubkey;
+    return getClusterAccAddress(arciumEnv.arciumClusterOffset);
   }
 
   setDefaultPool(pool: PublicKey): void {

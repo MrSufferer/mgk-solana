@@ -128,7 +128,16 @@ export class PerpetualsClient {
   };
 
   getPerpetuals = async () => {
-    return this.program.account.perpetuals.fetch(this.perpetuals.publicKey);
+    try {
+      return await this.program.account.perpetuals.fetch(this.perpetuals.publicKey);
+    } catch (e) {
+      throw new Error(
+        `Perpetuals account does not exist at ${this.perpetuals.publicKey.toBase58()}.\n` +
+        `You must initialize the perpetuals protocol first by running:\n` +
+        `  npx ts-node src/cli.ts -k <keypair> init --min-signatures 1 <admin-address>\n` +
+        `Where <admin-address> is your admin public key (e.g., $(solana address))`
+      );
+    }
   };
 
   getPoolKeyByIndex = (index: number): PublicKey => {
@@ -139,12 +148,40 @@ export class PerpetualsClient {
 
   getPoolIndexByName = async (name: string): Promise<number> => {
     const perpetuals = await this.getPerpetuals();
+    
+    // First check pools in the perpetuals.pools array
     for (let i = 0; i < perpetuals.pools.length; ++i) {
       try {
         const pool = await this.program.account.pool.fetch(perpetuals.pools[i]);
-        if (pool.name === name) return i;
-      } catch {}
+        const poolName = (pool.name as any).toString ? (pool.name as any).toString() : String(pool.name);
+        if (poolName === name) return i;
+      } catch (e) {
+        this.log(`Failed to fetch pool at index ${i}: ${e}`);
+      }
     }
+    
+    // If not found in array, scan actual pool accounts to find the index
+    this.log(`Pool '${name}' not found in perpetuals.pools array, scanning pool accounts...`);
+    for (let i = 0; i < 100; i++) {
+      const poolIndexBuffer = Buffer.alloc(8);
+      poolIndexBuffer.writeUInt32LE(i, 0);
+      const poolKey = PublicKey.findProgramAddressSync(
+        [Buffer.from("pool"), poolIndexBuffer],
+        this.program.programId
+      )[0];
+      
+      try {
+        const pool = await this.program.account.pool.fetch(poolKey);
+        const poolName = (pool.name as any).toString ? (pool.name as any).toString() : String(pool.name);
+        if (poolName === name) {
+          this.log(`Found pool '${name}' at index ${i} (not in perpetuals.pools array)`);
+          return i;
+        }
+      } catch (e) {
+        // Pool doesn't exist at this index, continue
+      }
+    }
+    
     throw new Error(`Pool with name '${name}' not found`);
   };
 
@@ -156,27 +193,90 @@ export class PerpetualsClient {
   getNextPoolKey = async (): Promise<PublicKey> => {
     const perpetualsData = await this.getPerpetuals();
     const poolIndex = perpetualsData.pools.length;
+    this.log(`Current pools count in perpetuals account: ${poolIndex}`);
+    
+    // The program derives the pool account using perpetuals.pools.len() as the seed
+    // So we MUST use the same index - we can't use a different one
     const poolIndexBuffer = Buffer.alloc(8);
     poolIndexBuffer.writeUInt32LE(poolIndex, 0);
-    return PublicKey.findProgramAddressSync(
+    const nextPoolKey = PublicKey.findProgramAddressSync(
       [Buffer.from("pool"), poolIndexBuffer],
       this.program.programId
     )[0];
+    
+    // Check if this pool already exists (which indicates a sync issue)
+    try {
+      const existingPool = await this.program.account.pool.fetch(nextPoolKey);
+      const poolName = (existingPool.name as any).toString ? (existingPool.name as any).toString() : String(existingPool.name);
+      
+      // Pool exists but isn't in perpetuals.pools array - this is a sync issue
+      // We need to either:
+      // 1. Remove the existing pool account, OR
+      // 2. Manually add it to perpetuals.pools array (if there's an instruction for that)
+      // For now, we'll throw a helpful error
+      throw new Error(
+        `Cannot add pool: Pool account at index ${poolIndex} already exists: ${nextPoolKey.toBase58()} (name: ${poolName}).\n` +
+        `This indicates the perpetuals.pools array is out of sync with actual pool accounts.\n\n` +
+        `SOLUTION OPTIONS:\n` +
+        `1. Reset your test environment (recommended for localnet):\n` +
+        `   anchor localnet down && anchor localnet up\n\n` +
+        `2. Manually close/remove the existing pool account at ${nextPoolKey.toBase58()}\n\n` +
+        `3. If you have admin access, you may be able to sync the pools array (check if there's a sync instruction)`
+      );
+    } catch (e) {
+      if (e instanceof Error && (e.message.includes('Cannot add pool') || e.message.includes('already exists'))) {
+        throw e;
+      }
+      // Pool doesn't exist, which is what we want - continue
+    }
+    
+    this.log(`Next pool key will be: ${nextPoolKey.toBase58()} (index ${poolIndex})`);
+    return nextPoolKey;
   };
 
   getPool = async (name: string) => {
     const perpetuals = await this.getPerpetuals();
+    this.log(`Searching for pool '${name}' in ${perpetuals.pools.length} pools`);
+    
+    // First, check pools in the perpetuals.pools array
     for (const poolAddress of perpetuals.pools) {
       try {
         const pool = await this.program.account.pool.fetch(poolAddress);
-        if (pool.name === name) {
+        const poolName = (pool.name as any).toString ? (pool.name as any).toString() : String(pool.name);
+        this.log(`Found pool: '${poolName}' at ${poolAddress.toBase58()}`);
+        if (poolName === name) {
           this.log(`Pool key: ${poolAddress.toBase58()}`);
           return pool;
         }
       } catch (e) {
+        this.log(`Failed to fetch pool at ${poolAddress.toBase58()}: ${e}`);
       }
     }
-    throw new Error(`Pool with name '${name}' not found`);
+    
+    // If not found in array, scan actual pool accounts (handles sync issues)
+    this.log(`Pool not found in perpetuals.pools array, scanning actual pool accounts...`);
+    for (let i = 0; i < 100; i++) {
+      const poolIndexBuffer = Buffer.alloc(8);
+      poolIndexBuffer.writeUInt32LE(i, 0);
+      const poolKey = PublicKey.findProgramAddressSync(
+        [Buffer.from("pool"), poolIndexBuffer],
+        this.program.programId
+      )[0];
+      
+      try {
+        const pool = await this.program.account.pool.fetch(poolKey);
+        const poolName = (pool.name as any).toString ? (pool.name as any).toString() : String(pool.name);
+        this.log(`Found pool account at index ${i}: '${poolName}' at ${poolKey.toBase58()}`);
+        if (poolName === name) {
+          this.log(`Pool key: ${poolKey.toBase58()} (found by scanning, not in perpetuals.pools array)`);
+          return pool;
+        }
+      } catch (e) {
+        // Pool doesn't exist at this index, continue
+      }
+    }
+    
+    throw new Error(`Pool with name '${name}' not found. Available pools in array: ${perpetuals.pools.map((p, i) => `pool[${i}]=${p.toBase58()}`).join(', ') || 'none'}`);
   };
 
   getPools = async () => {
@@ -305,6 +405,8 @@ export class PerpetualsClient {
         upgradeAuthority: this.provider.wallet.publicKey,
         perpetualsProgramData,
         perpetualsProgram: this.program.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
       })
       .remainingAccounts(adminMetas)
       .rpc()
@@ -366,7 +468,25 @@ export class PerpetualsClient {
   addPool = async (name: string): Promise<void> => {
     const poolKey = await this.getNextPoolKey();
     const lpTokenMintKey = this.findProgramAddress("lp_token_mint", [poolKey]).publicKey;
-    await this.program.methods
+    
+    this.log(`Creating pool "${name}"`);
+    this.log(`Pool key: ${poolKey.toBase58()}`);
+    this.log(`LP token mint: ${lpTokenMintKey.toBase58()}`);
+    
+    // Check if pool already exists with this name
+    try {
+      const existingPool = await this.getPool(name);
+      throw new Error(`Pool with name "${name}" already exists at ${existingPool}`);
+    } catch (e) {
+      // Pool doesn't exist, which is what we want
+      if (e instanceof Error && e.message.includes('not found')) {
+        // This is expected, continue
+      } else {
+        throw e;
+      }
+    }
+    
+    const signature = await this.program.methods
       .addPool({ name })
       .accountsPartial({
         admin: this.admin.publicKey,
@@ -384,6 +504,27 @@ export class PerpetualsClient {
         console.error(err);
         throw err;
       });
+    
+    this.log(`Pool add transaction: ${signature}`);
+    // Wait for confirmation to ensure the pool is added to perpetuals.pools
+    await this.provider.connection.confirmTransaction(signature, "confirmed");
+    
+    // Wait a bit more and refresh to ensure the perpetuals account is updated
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Verify the pool was added to perpetuals.pools
+    const updatedPerpetuals = await this.getPerpetuals();
+    const poolWasAdded = updatedPerpetuals.pools.some(p => p.equals(poolKey));
+    
+    if (!poolWasAdded) {
+      this.log(`WARNING: Pool was created but not added to perpetuals.pools array. This may be a sync issue.`);
+      this.log(`Pool key: ${poolKey.toBase58()}`);
+      this.log(`Perpetuals.pools: ${updatedPerpetuals.pools.map(p => p.toBase58()).join(', ') || 'empty'}`);
+    } else {
+      this.log(`Pool successfully added to perpetuals.pools array`);
+    }
+    
+    this.log(`Pool "${name}" added successfully`);
   };
 
   removePool = async (name: string): Promise<void> => {
@@ -412,18 +553,8 @@ export class PerpetualsClient {
     borrowRate: BorrowRateParams,
     ratios: TokenRatio[]
   ): Promise<void> => {
-    const perpetuals = await this.getPerpetuals();
-    let poolAddress: PublicKey | undefined;
-    for (const addr of perpetuals.pools) {
-      try {
-        const pool = await this.program.account.pool.fetch(addr);
-        if (pool.name === poolName) {
-          poolAddress = addr;
-          break;
-        }
-      } catch {}
-    }
-    if (!poolAddress) throw new Error(`Pool '${poolName}' not found`);
+    // Use getPoolKey which will find the pool even if not in perpetuals.pools array
+    const poolAddress = await this.getPoolKey(poolName);
 
     const custodyPDA = PublicKey.findProgramAddressSync(
       [Buffer.from("custody"), poolAddress.toBuffer(), tokenMint.toBuffer()],
@@ -701,9 +832,45 @@ export class PerpetualsClient {
       );
     }
     
+    // Verify funding account exists and has balance
+    const fundingAccountInfo = await this.provider.connection.getAccountInfo(fundingAccount);
+    if (!fundingAccountInfo) {
+      throw new Error(
+        `Funding account ${fundingAccount.toString()} does not exist. ` +
+        `For SOL, you may need to wrap it first or create a wrapped SOL token account.`
+      );
+    }
+    
+    // Verify LP token account exists
+    const lpTokenAccountInfo = await this.provider.connection.getAccountInfo(lpTokenAccount);
+    if (!lpTokenAccountInfo) {
+      this.log(`Warning: LP token account ${lpTokenAccount.toString()} does not exist. It will be created automatically.`);
+    }
+    
     const custodyTokenAccountKey = await this.getCustodyTokenAccountKey(poolName, tokenMint);
     const lpTokenMintKey = await this.getPoolLpTokenKey(poolName);
+    const custodyOracleAccountKey = await this.getCustodyOracleAccountKey(poolName, tokenMint);
     const custodyMetas = await this.getCustodyMetas(poolName);
+
+    // Log account addresses for debugging
+    this.log(`Add Liquidity Accounts:`);
+    this.log(`  Pool: ${poolKey.toBase58()}`);
+    this.log(`  Custody: ${custodyKey.toBase58()}`);
+    this.log(`  Custody Token Account: ${custodyTokenAccountKey.toBase58()}`);
+    this.log(`  Custody Oracle Account: ${custodyOracleAccountKey.toBase58()}`);
+    this.log(`  LP Token Mint: ${lpTokenMintKey.toBase58()}`);
+    this.log(`  Funding Account: ${fundingAccount.toBase58()}`);
+    this.log(`  LP Token Account: ${lpTokenAccount.toBase58()}`);
+    this.log(`  Remaining Accounts (custodies + oracles): ${custodyMetas.length}`);
+
+    // Verify perpetuals account includes this pool
+    const perpetualsData = await this.getPerpetuals();
+    const poolInArray = perpetualsData.pools.some(p => p.equals(poolKey));
+    if (!poolInArray) {
+      this.log(`WARNING: Pool ${poolKey.toBase58()} is NOT in perpetuals.pools array!`);
+      this.log(`This may cause program errors. The pool exists but isn't registered in the perpetuals account.`);
+      this.log(`Perpetuals account has ${perpetualsData.pools.length} pools registered.`);
+    }
 
     const signature = await this.program.methods
       .addLiquidity({
@@ -719,6 +886,7 @@ export class PerpetualsClient {
         pool: poolKey,
         custody: custodyKey,
         custodyTokenAccount: custodyTokenAccountKey,
+        custodyOracleAccount: custodyOracleAccountKey,
         lpTokenMint: lpTokenMintKey,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
@@ -755,6 +923,7 @@ export class PerpetualsClient {
     
     const custodyTokenAccountKey = await this.getCustodyTokenAccountKey(poolName, tokenMint);
     const lpTokenMintKey = await this.getPoolLpTokenKey(poolName);
+    const custodyOracleAccountKey = await this.getCustodyOracleAccountKey(poolName, tokenMint);
     const custodyMetas = await this.getCustodyMetas(poolName);
 
     const signature = await this.program.methods
@@ -771,6 +940,7 @@ export class PerpetualsClient {
         pool: poolKey,
         custody: custodyKey,
         custodyTokenAccount: custodyTokenAccountKey,
+        custodyOracleAccount: custodyOracleAccountKey,
         lpTokenMint: lpTokenMintKey,
       })
       .remainingAccounts(custodyMetas)

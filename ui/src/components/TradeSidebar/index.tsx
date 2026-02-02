@@ -1,6 +1,7 @@
 import { SidebarTab } from "@/components/SidebarTab";
 import { TradePosition } from "@/components/TradeSidebar/TradePosition";
 import { TradeSwap } from "@/components/TradeSidebar/TradeSwap";
+import { ModeToggle } from "@/components/ModeToggle";
 import { Side } from "@/lib/types";
 import ArrowsHorizontalIcon from "@carbon/icons-react/lib/ArrowsHorizontal";
 import GrowthIcon from "@carbon/icons-react/lib/Growth";
@@ -20,6 +21,7 @@ export function TradeSidebar(props: Props) {
       <div
         className={twMerge("bg-zinc-800", "p-4", "rounded", "overflow-hidden")}
       >
+        <ModeToggle className="mb-4" />
         <div className="grid grid-cols-3 gap-x-1 rounded bg-black p-1">
           <SidebarTab
             selected={side === Side.Long}

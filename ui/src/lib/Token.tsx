@@ -102,7 +102,8 @@ export function getSymbol(token: TokenE) {
   }
 }
 
-export function getTokenIcon(token: TokenE) {
+export function getTokenIcon(token: TokenE | null | undefined) {
+  if (!token) return null;
   switch (token) {
     case TokenE.SOL:
       return <SolanaIconCircle />;
@@ -122,6 +123,9 @@ export function getTokenIcon(token: TokenE) {
       return <BonkIconCircle />;
     case TokenE.TEST:
       return <BonkIconCircle />;
+    default:
+      console.warn(`Unknown token: ${token}`);
+      return null;
   }
 }
 
@@ -174,7 +178,8 @@ export function tokenAddressToToken(address: string): TokenE | null {
   }
 }
 
-export function getTokenAddress(token: TokenE) {
+export function getTokenAddress(token: TokenE | null | undefined): string | null {
+  if (!token) return null;
   switch (token) {
     case TokenE.SOL:
       return "So11111111111111111111111111111111111111112";
@@ -195,5 +200,8 @@ export function getTokenAddress(token: TokenE) {
       return "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263";
     case TokenE.TEST:
       return "6QGdQbaZEgpXqqbGwXJZXwbZ9xJnthfyYNZ92ARzTdAX";
+    default:
+      console.warn(`Unknown token: ${token}`);
+      return null;
   }
 }

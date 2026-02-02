@@ -57,66 +57,75 @@ export function CollateralModal(props: Props) {
 
   useEffect(() => {
     async function fetchNewStats() {
-      let { perpetual_program } = await getPerpetualProgramAndProvider(
-        walletContextState
-      );
+      try {
+        let { perpetual_program } = await getPerpetualProgramAndProvider(
+          walletContextState
+        );
 
-      const View = new ViewHelper(
-        perpetual_program.provider.connection,
-        perpetual_program.provider
-      );
+        const View = new ViewHelper(
+          perpetual_program.provider.connection,
+          perpetual_program.provider
+        );
 
-      let fetchedOldLiq = await View.getLiquidationPrice(props.position);
+        let fetchedOldLiq = await View.getLiquidationPrice(props.position);
 
-      setLiqPrice(Math.round((fetchedOldLiq / 10 ** 6) * 100) / 100);
+        setLiqPrice(Math.round((fetchedOldLiq / 10 ** 6) * 100) / 100);
 
-      if (tab === Tab.Add && depositAmount === 0) {
+        if (tab === Tab.Add && depositAmount === 0) {
+          setNewCollateral(null);
+          setNewLeverage(null);
+          setNewLiqPrice(null);
+          return;
+        }
+
+        if (tab === Tab.Remove && withdrawAmount === 0) {
+          setNewCollateral(null);
+          setNewLeverage(null);
+          setNewLiqPrice(null);
+          return;
+        }
+
+        let liquidationPrice = await View.getLiquidationPrice(
+          props.position,
+          pool.getCustodyAccount(props.position.token)!,
+          depositAmount,
+          withdrawAmount
+        );
+
+        let newLiq = Math.round((liquidationPrice / 10 ** 6) * 100) / 100;
+
+        setNewLiqPrice(newLiq);
+
+        let newCollat;
+        if (tab === Tab.Add) {
+          newCollat =
+            props.position.getCollateralUsd() +
+            depositAmount * stats[props.position.token].currentPrice;
+        } else {
+          newCollat = props.position.getCollateralUsd() - withdrawAmount;
+        }
+
+        setNewCollateral(Math.round(newCollat * 100) / 100);
+
+        let newLev;
+        let changeCollateral =
+          tab === Tab.Add
+            ? depositAmount * stats[props.position.token].currentPrice
+            : -1 * withdrawAmount;
+
+        newLev =
+          props.position.getSizeUsd() /
+          (props.position.getCollateralUsd() + changeCollateral);
+
+        setNewLeverage(Math.round(newLev * 100) / 100);
+      } catch (error) {
+        // Silently handle errors during user input - simulation may fail for invalid amounts
+        console.debug("Failed to fetch liquidation price:", error);
+        // Reset values to prevent showing stale data
         setNewCollateral(null);
         setNewLeverage(null);
         setNewLiqPrice(null);
-        return;
       }
-
-      if (tab === Tab.Remove && withdrawAmount === 0) {
-        setNewCollateral(null);
-        setNewLeverage(null);
-        setNewLiqPrice(null);
-        return;
-      }
-
-      let liquidationPrice = await View.getLiquidationPrice(
-        props.position,
-        pool.getCustodyAccount(props.position.token)!,
-        depositAmount,
-        withdrawAmount
-      );
-
-      let newLiq = Math.round((liquidationPrice / 10 ** 6) * 100) / 100;
-
-      setNewLiqPrice(newLiq);
-
-      let newCollat;
-      if (tab === Tab.Add) {
-        newCollat =
-          props.position.getCollateralUsd() +
-          depositAmount * stats[props.position.token].currentPrice;
-      } else {
-        newCollat = props.position.getCollateralUsd() - withdrawAmount;
-      }
-
-      setNewCollateral(Math.round(newCollat * 100) / 100);
-
-      let newLev;
-      let changeCollateral =
-        tab === Tab.Add
-          ? depositAmount * stats[props.position.token].currentPrice
-          : -1 * withdrawAmount;
-
-      newLev =
-        props.position.getSizeUsd() /
-        (props.position.getCollateralUsd() + changeCollateral);
-
-      setNewLeverage(Math.round(newLev * 100) / 100);
     }
 
     if (pool && props.position && payTokenBalance) {

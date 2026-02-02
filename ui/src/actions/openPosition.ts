@@ -29,7 +29,8 @@ import {
 } from "@solana/web3.js";
 import { swapTransactionBuilder } from "src/actions/swap";
 import { getPerpetualsService } from "@/utils/serviceProvider";
-import { PositionSide } from "@/adapter/types";
+import { PositionSide, AdapterMode } from "@/adapter/types";
+import { useGlobalStore } from "@/stores/store";
 
 export async function openPositionBuilder(
   walletContextState: WalletContextState,
@@ -180,7 +181,12 @@ export async function openPositionBuilder(
     }
   }
 
-  // Get the PerpetualsService (adapter)
+  // Get the adapter mode from store
+  const adapterMode = typeof window !== 'undefined' 
+    ? useGlobalStore.getState().adapterMode 
+    : AdapterMode.Private;
+
+  // Get the PerpetualsService (adapter) - it will get mode from store if not provided
   const service = await getPerpetualsService(walletContextState);
 
   // Convert price to anchor.BN with 8 decimals (as per test file)
@@ -209,6 +215,17 @@ export async function openPositionBuilder(
   console.log("  Collateral (USD):", collateralUsd.toString());
   console.log("  Leverage:", leverage + "x");
 
+  // Get funding account (token account for collateral)
+  // For public mode, we need the user's token account
+  let fundingAccount: PublicKey | undefined;
+  if (adapterMode === AdapterMode.Public) {
+    // Get the associated token account for the collateral token
+    fundingAccount = await getAssociatedTokenAddress(
+      payCustody.mint,
+      publicKey
+    );
+  }
+
   // Call adapter to open position
   try {
     const result = await service.openPosition({
@@ -219,6 +236,7 @@ export async function openPositionBuilder(
       pool: pool.address,
       custody: positionCustody.address,
       collateralCustody: payCustody.address,
+      fundingAccount: fundingAccount,
     });
 
     if (result.signature) {

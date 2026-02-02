@@ -11,3 +11,5 @@ build
 encrypted-ixs/src/main.rs
 artifacts/
 .env
+
+arcium-0.5.1-examples/

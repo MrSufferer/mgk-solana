@@ -76,52 +76,66 @@ export default function LiquidityCard(props: Props) {
   useEffect(() => {
     async function fetchData() {
       setPendingRateConversion(true);
-      const { provider } = await getPerpetualProgramAndProvider(wallet as any);
-      const View = new ViewHelper(connection, provider);
-      let liqInfo;
+      
+      try {
+        const { provider } = await getPerpetualProgramAndProvider(wallet as any);
+        const View = new ViewHelper(connection, provider);
+        let liqInfo;
 
-      if (
-        tab === Tab.Add &&
-        tokenAmount !== 0 &&
-        tokenAmount !== prevTokenAmount
-      ) {
-        const custody = props.pool!.getCustodyAccount(payToken!);
-        if (!custody) {
-          console.error(`No custody found for token: ${payToken}`);
-          return;
+        if (
+          tab === Tab.Add &&
+          tokenAmount !== 0 &&
+          tokenAmount !== prevTokenAmount
+        ) {
+          const custody = props.pool!.getCustodyAccount(payToken!);
+          if (!custody) {
+            console.error(`No custody found for token: ${payToken}`);
+            setPendingRateConversion(false);
+            return;
+          }
+          liqInfo = await View.getAddLiquidityAmountAndFees(
+            tokenAmount,
+            props.pool!,
+            custody
+          );
+
+          setLiqAmount(Number(liqInfo.amount) / 10 ** props.pool.lpData.decimals);
+          setPrevTokenAmount(tokenAmount);
         }
-        liqInfo = await View.getAddLiquidityAmountAndFees(
-          tokenAmount,
-          props.pool!,
-          custody
-        );
 
-        setLiqAmount(Number(liqInfo.amount) / 10 ** props.pool.lpData.decimals);
-        setPrevTokenAmount(tokenAmount);
+        if (
+          tab === Tab.Remove &&
+          liqAmount !== 0 &&
+          liqAmount !== prevLiqAmount
+        ) {
+          liqInfo = await View.getRemoveLiquidityAmountAndFees(
+            liqAmount,
+            props.pool!,
+            props.pool!.getCustodyAccount(payToken!)!
+          );
+          setTokenAmount(
+            Number(liqInfo.amount) /
+              10 ** props.pool.getCustodyAccount(payToken!)!.decimals
+          );
+          setPrevLiqAmount(liqAmount);
+        }
+
+        if (liqInfo) {
+          setFee(Number(liqInfo.fee) / 10 ** 6);
+        }
+      } catch (error) {
+        // Silently handle errors during user input - simulation may fail for invalid amounts
+        console.debug("Failed to fetch liquidity amount and fees:", error);
+        // Reset values to prevent showing stale data
+        if (tab === Tab.Add) {
+          setLiqAmount(0);
+        } else {
+          setTokenAmount(0);
+        }
+        setFee(0);
+      } finally {
+        setPendingRateConversion(false);
       }
-
-      if (
-        tab === Tab.Remove &&
-        liqAmount !== 0 &&
-        liqAmount !== prevLiqAmount
-      ) {
-        liqInfo = await View.getRemoveLiquidityAmountAndFees(
-          liqAmount,
-          props.pool!,
-          props.pool!.getCustodyAccount(payToken!)!
-        );
-        setTokenAmount(
-          Number(liqInfo.amount) /
-            10 ** props.pool.getCustodyAccount(payToken!)!.decimals
-        );
-        setPrevLiqAmount(liqAmount);
-      }
-
-      if (liqInfo) {
-        setFee(Number(liqInfo.fee) / 10 ** 6);
-      }
-
-      setPendingRateConversion(false);
     }
 
     if (

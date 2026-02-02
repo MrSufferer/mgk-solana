@@ -3,6 +3,7 @@ import { CustodyAccount } from "@/lib/CustodyAccount";
 import { PoolAccount } from "@/lib/PoolAccount";
 import { Custody, PriceStats } from "@/lib/types";
 import { UserAccount } from "@/lib/UserAccount";
+import { AdapterMode } from "@/adapter/types";
 import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 
@@ -24,6 +25,9 @@ interface StoreState {
 
   priceStats: PriceStats;
   setPriceStats: (stats: PriceStats) => void;
+
+  adapterMode: AdapterMode;
+  setAdapterMode: (mode: AdapterMode) => void;
 }
 
 export const useGlobalStore = create<StoreState>()(
@@ -49,6 +53,9 @@ export const useGlobalStore = create<StoreState>()(
 
     priceStats: {},
     setPriceStats: (stats: PriceStats) => set({ priceStats: stats }),
+
+    adapterMode: AdapterMode.Private,
+    setAdapterMode: (mode: AdapterMode) => set({ adapterMode: mode }),
   }),   
   { serialize: { replacer: bigintSafe } })
 );

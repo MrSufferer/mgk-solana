@@ -1,10 +1,16 @@
 use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
-use arcium_client::idl::arcium::types::{CallbackAccount, CircuitSource, OffChainCircuitSource};
+use arcium_client::idl::arcium::types::CallbackAccount;
 use anchor_spl::token::{Token, Mint, TokenAccount, Transfer, MintTo, Burn};
+
+use arcium_client::idl::arcium::types::{CircuitSource, OffChainCircuitSource};
+use arcium_macros::circuit_hash;
 
 pub mod state;
 pub use state::*;
+
+pub mod utils;
+pub use utils::*;
 
 const COMP_DEF_OFFSET_CALCULATE_POSITION_VALUE: u32 = comp_def_offset("calculate_position_value");
 const COMP_DEF_OFFSET_OPEN_POSITION: u32 = comp_def_offset("open_position");
@@ -12,8 +18,9 @@ const COMP_DEF_OFFSET_CLOSE_POSITION: u32 = comp_def_offset("close_position");
 const COMP_DEF_OFFSET_ADD_COLLATERAL: u32 = comp_def_offset("add_collateral");
 const COMP_DEF_OFFSET_REMOVE_COLLATERAL: u32 = comp_def_offset("remove_collateral");
 const COMP_DEF_OFFSET_LIQUIDATE: u32 = comp_def_offset("liquidate");
+const COMP_DEF_OFFSET_MIX_POSITIONS: u32 = comp_def_offset("mix_positions");
 
-declare_id!("8PrsDCQnKTyRXDaYq8v2SsjLyKr3UF8uP7RsGbKHYtuq");
+declare_id!("6DF5b76htRfcPdG3gWrcLvBx48AtnMbc2ZsaCvJvvhUx");
 
 #[arcium_program]
 pub mod perpetuals {
@@ -22,10 +29,9 @@ pub mod perpetuals {
     pub fn init_open_position_comp_def(ctx: Context<InitOpenPositionCompDef>) -> Result<()> {
         init_comp_def(
             ctx.accounts,
-            0,
             Some(CircuitSource::OffChain(OffChainCircuitSource {
                 source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/open_position.arcis".to_string(),
-                hash: [0; 32], // Hash verification not enforced yet
+                hash: circuit_hash!("open_position"),
             })),
             None,
         )?;
@@ -67,14 +73,14 @@ pub mod perpetuals {
         position.liquidator = Pubkey::default();  // Initialize to default, set during liquidation
         position.bump = ctx.bumps.position;
 
-        let args = vec![
-            Argument::ArcisPubkey(client_pubkey),
-            Argument::PlaintextU128(size_nonce),
-            Argument::EncryptedU64(size_encrypted),
-            Argument::ArcisPubkey(client_pubkey),
-            Argument::PlaintextU128(collateral_nonce),
-            Argument::EncryptedU64(collateral_encrypted),
-        ];
+        let args = ArgBuilder::new()
+            .x25519_pubkey(client_pubkey)
+            .plaintext_u128(size_nonce)
+            .encrypted_u64(size_encrypted)
+            .x25519_pubkey(client_pubkey)
+            .plaintext_u128(collateral_nonce)
+            .encrypted_u64(collateral_encrypted)
+            .build();
 
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
@@ -83,10 +89,15 @@ pub mod perpetuals {
             computation_offset,
             args,
             None,
-            vec![OpenPositionCallback::callback_ix(&[
+            vec![OpenPositionCallback::callback_ix(
+                computation_offset,
+                &ctx.accounts.mxe_account,
+                &[
                 CallbackAccount { pubkey: position_key, is_writable: true },
-            ])],
+                ]
+            )?],
             1,
+            0,  // cu_price_micro: priority fee in microlamports (0 = no priority fee)
         )?;
 
         Ok(())
@@ -95,17 +106,25 @@ pub mod perpetuals {
     #[arcium_callback(encrypted_ix = "open_position")]
     pub fn open_position_callback(
         ctx: Context<OpenPositionCallback>,
-        output: ComputationOutputs<OpenPositionOutput>,
+        output: SignedComputationOutputs<OpenPositionOutput>,
     ) -> Result<()> {
-        let (size_output, collateral_output) = match output {
-            ComputationOutputs::Success(OpenPositionOutput {
+        let OpenPositionOutput {
                 field_0: OpenPositionOutputStruct0 {
                     field_0: size,
                     field_1: collateral,
                 },
-            }) => (size, collateral),
-            _ => return Err(ErrorCode::AbortedComputation.into()),
+        } = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account
+        ) {
+            Ok(result) => result,
+            Err(e) => {
+                msg!("Error: {}", e);
+                return Err(ErrorCode::AbortedComputation.into())
+            },
         };
+        
+        let (size_output, collateral_output) = (size, collateral);
 
         let size_encrypted = size_output.ciphertexts[0];
         let size_nonce = size_output.nonce;
@@ -133,18 +152,185 @@ pub mod perpetuals {
         Ok(())
     }
 
+    pub fn open_position_public(
+        ctx: Context<OpenPositionPublic>,
+        position_id: u64,
+        params: OpenPositionPublicParams,
+    ) -> Result<()> {
+        require!(params.side <= 1, ErrorCode::InvalidPositionSide);
+        require!(params.collateral > 0 && params.size > 0, ErrorCode::InvalidInput);
+        
+        let perpetuals = ctx.accounts.perpetuals.as_ref();
+        let pool = &mut ctx.accounts.pool;
+        let custody = &mut ctx.accounts.custody;
+        let collateral_custody = &mut ctx.accounts.collateral_custody;
+        
+        require!(
+            perpetuals.permissions.allow_open_position &&
+            custody.permissions.allow_open_position,
+            ErrorCode::InvalidInput
+        );
+        
+        let entry_price = get_price_from_oracle(
+            &custody.oracle,
+            &ctx.accounts.custody_oracle_account
+        )?;
+        
+        let collateral_price = get_price_from_oracle(
+            &collateral_custody.oracle,
+            &ctx.accounts.collateral_custody_oracle_account
+        )?;
+        
+        let side = if params.side == 0 {
+            PositionSide::Long
+        } else {
+            PositionSide::Short
+        };
+        
+        if side == PositionSide::Long {
+            require!(params.price >= entry_price, ErrorCode::InvalidInput);
+        } else {
+            require!(entry_price >= params.price, ErrorCode::InvalidInput);
+        }
+        
+        let leverage = params.size
+            .checked_mul(10000)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(params.collateral)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        require!(
+            leverage >= custody.pricing.min_initial_leverage &&
+            leverage <= custody.pricing.max_initial_leverage,
+            ErrorCode::InvalidInput
+        );
+        
+        let fee_rate = calculate_fee_rate(
+            custody.fees.mode,
+            custody.fees.open_position,
+            &collateral_custody,
+            params.size,
+        )?;
+        
+        let fee = params.size
+            .checked_mul(fee_rate)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(10000)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        let locked_amount = params.size;
+        
+        let transfer_amount = params.collateral
+            .checked_add(fee)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        perpetuals.transfer_tokens_from_user(
+            ctx.accounts.funding_account.to_account_info(),
+            ctx.accounts.collateral_custody_token_account.to_account_info(),
+            ctx.accounts.owner.to_account_info(),
+            ctx.accounts.token_program.to_account_info(),
+            transfer_amount,
+        )?;
+        
+        collateral_custody.assets.collateral = collateral_custody.assets.collateral
+            .checked_add(params.collateral)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        collateral_custody.assets.locked = collateral_custody.assets.locked
+            .checked_add(locked_amount)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        let protocol_fee = fee
+            .checked_mul(custody.fees.protocol_share)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(10000)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        collateral_custody.assets.protocol_fees = collateral_custody.assets.protocol_fees
+            .checked_add(protocol_fee)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        collateral_custody.collected_fees.open_position_usd = 
+            collateral_custody.collected_fees.open_position_usd.wrapping_add(fee);
+        
+        collateral_custody.volume_stats.open_position_usd = 
+            collateral_custody.volume_stats.open_position_usd.wrapping_add(params.size);
+        
+        if side == PositionSide::Long {
+            collateral_custody.trade_stats.oi_long_usd = collateral_custody.trade_stats.oi_long_usd
+                .checked_add(params.size)
+                .ok_or(ErrorCode::MathOverflow)?;
+        } else {
+            collateral_custody.trade_stats.oi_short_usd = collateral_custody.trade_stats.oi_short_usd
+                .checked_add(params.size)
+                .ok_or(ErrorCode::MathOverflow)?;
+        }
+        
+        let position_stats = if side == PositionSide::Long {
+            &mut collateral_custody.long_positions
+        } else {
+            &mut collateral_custody.short_positions
+        };
+        
+        position_stats.open_positions = position_stats.open_positions
+            .checked_add(1)
+            .ok_or(ErrorCode::MathOverflow)?;
+        position_stats.size_usd = position_stats.size_usd
+            .checked_add(params.size)
+            .ok_or(ErrorCode::MathOverflow)?;
+        position_stats.collateral_usd = position_stats.collateral_usd
+            .checked_add(params.collateral)
+            .ok_or(ErrorCode::MathOverflow)?;
+        position_stats.locked_amount = position_stats.locked_amount
+            .checked_add(locked_amount)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        pool.aum_usd = pool.aum_usd
+            .checked_add(params.collateral as u128)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        let position = &mut ctx.accounts.position;
+        position.owner = ctx.accounts.owner.key();
+        position.position_id = position_id;
+        position.side = side;
+        position.entry_price = entry_price;
+        position.open_time = Clock::get()?.unix_timestamp;
+        position.update_time = Clock::get()?.unix_timestamp;
+        
+        // For public version, store plaintext values in the encrypted fields
+        // (This is just for testing - in production these would be encrypted)
+        let mut size_bytes = [0u8; 32];
+        size_bytes[..8].copy_from_slice(&params.size.to_le_bytes());
+        position.size_usd_encrypted = size_bytes;
+
+        let mut collateral_bytes = [0u8; 32];
+        collateral_bytes[..8].copy_from_slice(&params.collateral.to_le_bytes());
+        position.collateral_usd_encrypted = collateral_bytes;
+        
+        position.owner_enc_pubkey = [0; 32]; // Not needed for public version
+        position.size_nonce = 0;
+        position.collateral_nonce = 0;
+        position.liquidator = Pubkey::default();
+        position.bump = ctx.bumps.position;
+        
+        emit!(PositionOpenedEvent {
+            position_id: position.position_id,
+            owner: position.owner,
+            side: position.side,
+            entry_price: position.entry_price,
+            size_encrypted: position.size_usd_encrypted,
+            size_nonce: position.size_nonce,
+            collateral_encrypted: position.collateral_usd_encrypted,
+            collateral_nonce: position.collateral_nonce,
+        });
+        
+        Ok(())
+    }
+
     pub fn init_calculate_position_value_comp_def(
         ctx: Context<InitCalculatePositionValueCompDef>,
     ) -> Result<()> {
-        init_comp_def(
-            ctx.accounts,
-            0,
-            Some(CircuitSource::OffChain(OffChainCircuitSource {
-                source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/calculate_position_value.arcis".to_string(),
-                hash: [0; 32], // Hash verification not enforced yet
-            })),
-            None,
-        )?;
+        init_comp_def(ctx.accounts, None, None)?;
         Ok(())
     }
 
@@ -158,19 +344,19 @@ pub mod perpetuals {
     ) -> Result<()> {
         let position = &ctx.accounts.position;
 
-        let args = vec![
-            Argument::ArcisPubkey(client_pubkey),
-            Argument::PlaintextU128(nonce),
-            Argument::ArcisPubkey(position.owner_enc_pubkey),
-            Argument::PlaintextU128(position.size_nonce),
-            Argument::Account(position.key(), 8 + 32 + 8 + 1, 32),
-            Argument::ArcisPubkey(position.owner_enc_pubkey),
-            Argument::PlaintextU128(position.collateral_nonce),
-            Argument::Account(position.key(), 8 + 32 + 8 + 1 + 32, 32),
-            Argument::PlaintextU64(position.entry_price),
-            Argument::PlaintextU64(current_price),
-            Argument::PlaintextU8(position.side as u8),
-        ];
+        let args = ArgBuilder::new()
+            .x25519_pubkey(client_pubkey)
+            .plaintext_u128(nonce)
+            .x25519_pubkey(position.owner_enc_pubkey)
+            .plaintext_u128(position.size_nonce)
+            .account(position.key(), 8 + 32 + 8 + 1, 32)
+            .x25519_pubkey(position.owner_enc_pubkey)
+            .plaintext_u128(position.collateral_nonce)
+            .account(position.key(), 8 + 32 + 8 + 1 + 32, 32)
+            .plaintext_u64(position.entry_price)
+            .plaintext_u64(current_price)
+            .plaintext_u8(position.side as u8)
+            .build();
 
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
@@ -179,10 +365,15 @@ pub mod perpetuals {
             computation_offset,
             args,
             None,
-            vec![CalculatePositionValueCallback::callback_ix(&[
+            vec![CalculatePositionValueCallback::callback_ix(
+                computation_offset,
+                &ctx.accounts.mxe_account,
+                &[
                 CallbackAccount { pubkey: position.key(), is_writable: true },
-            ])],
+                ]
+            )?],
             1,
+            0,  // cu_price_micro: priority fee in microlamports (0 = no priority fee)
         )?;
 
         Ok(())
@@ -191,11 +382,17 @@ pub mod perpetuals {
     #[arcium_callback(encrypted_ix = "calculate_position_value")]
     pub fn calculate_position_value_callback(
         ctx: Context<CalculatePositionValueCallback>,
-        output: ComputationOutputs<CalculatePositionValueOutput>,
+        output: SignedComputationOutputs<CalculatePositionValueOutput>,
     ) -> Result<()> {
-        let value_output = match output {
-            ComputationOutputs::Success(CalculatePositionValueOutput { field_0 }) => field_0,
-            _ => return Err(ErrorCode::AbortedComputation.into()),
+        let value_output = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account
+        ) {
+            Ok(CalculatePositionValueOutput { field_0 }) => field_0,
+            Err(e) => {
+                msg!("Error: {}", e);
+                return Err(ErrorCode::AbortedComputation.into())
+            },
         };
 
         let position = &ctx.accounts.position;
@@ -213,11 +410,7 @@ pub mod perpetuals {
     pub fn init_close_position_comp_def(ctx: Context<InitClosePositionCompDef>) -> Result<()> {
         init_comp_def(
             ctx.accounts,
-            0,
-            Some(CircuitSource::OffChain(OffChainCircuitSource {
-                source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/close_position.arcis".to_string(),
-                hash: [0; 32], // Hash verification not enforced yet
-            })),
+            None,
             None,
         )?;
         Ok(())
@@ -239,19 +432,19 @@ pub mod perpetuals {
         );
 
 
-        let args = vec![
-            Argument::ArcisPubkey(client_pubkey),
-            Argument::PlaintextU128(nonce),
-            Argument::ArcisPubkey(position.owner_enc_pubkey),
-            Argument::PlaintextU128(position.size_nonce),
-            Argument::Account(position.key(), 8 + 32 + 8 + 1, 32), // size_usd_encrypted
-            Argument::ArcisPubkey(position.owner_enc_pubkey),
-            Argument::PlaintextU128(position.collateral_nonce),
-            Argument::Account(position.key(), 8 + 32 + 8 + 1 + 32, 32), // collateral_usd_encrypted
-            Argument::PlaintextU64(position.entry_price),
-            Argument::PlaintextU64(current_price),
-            Argument::PlaintextU8(position.side as u8),
-        ];
+        let args = ArgBuilder::new()
+            .x25519_pubkey(client_pubkey)
+            .plaintext_u128(nonce)
+            .x25519_pubkey(position.owner_enc_pubkey)
+            .plaintext_u128(position.size_nonce)
+            .account(position.key(), 8 + 32 + 8 + 1, 32) // size_usd_encrypted
+            .x25519_pubkey(position.owner_enc_pubkey)
+            .plaintext_u128(position.collateral_nonce)
+            .account(position.key(), 8 + 32 + 8 + 1 + 32, 32) // collateral_usd_encrypted
+            .plaintext_u64(position.entry_price)
+            .plaintext_u64(current_price)
+            .plaintext_u8(position.side as u8)
+            .build();
 
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
@@ -260,10 +453,15 @@ pub mod perpetuals {
             computation_offset,
             args,
             None,
-            vec![ClosePositionCallback::callback_ix(&[
+            vec![ClosePositionCallback::callback_ix(
+                computation_offset,
+                &ctx.accounts.mxe_account,
+                &[
                 CallbackAccount { pubkey: position.key(), is_writable: true },
-            ])],
+                ]
+            )?],
             1,
+            0,  // cu_price_micro: priority fee in microlamports (0 = no priority fee)
         )?;
 
         Ok(())
@@ -272,11 +470,17 @@ pub mod perpetuals {
     #[arcium_callback(encrypted_ix = "close_position")]
     pub fn close_position_callback(
         ctx: Context<ClosePositionCallback>,
-        output: ComputationOutputs<ClosePositionOutput>,
+        output: SignedComputationOutputs<ClosePositionOutput>,
     ) -> Result<()> {
-        let close_output = match output {
-            ComputationOutputs::Success(ClosePositionOutput { field_0 }) => field_0,
-            _ => return Err(ErrorCode::AbortedComputation.into()),
+        let close_output = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account
+        ) {
+            Ok(ClosePositionOutput { field_0 }) => field_0,
+            Err(e) => {
+                msg!("Error: {}", e);
+                return Err(ErrorCode::AbortedComputation.into())
+            },
         };
 
         let position = &mut ctx.accounts.position;
@@ -299,11 +503,7 @@ pub mod perpetuals {
     pub fn init_add_collateral_comp_def(ctx: Context<InitAddCollateralCompDef>) -> Result<()> {
         init_comp_def(
             ctx.accounts,
-            0,
-            Some(CircuitSource::OffChain(OffChainCircuitSource {
-                source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/add_collateral.arcis".to_string(),
-                hash: [0; 32], // Hash verification not enforced yet
-            })),
+            None,
             None,
         )?;
         Ok(())
@@ -324,17 +524,17 @@ pub mod perpetuals {
             ErrorCode::InvalidPositionOwner
         );
 
-        let args = vec![
-            Argument::ArcisPubkey(position.owner_enc_pubkey),
-            Argument::PlaintextU128(position.collateral_nonce),
-            Argument::Account(position.key(), 8 + 32 + 8 + 1 + 32, 32), // collateral_usd_encrypted
-            Argument::ArcisPubkey(client_pubkey),
-            Argument::PlaintextU128(additional_collateral_nonce),
-            Argument::EncryptedU64(additional_collateral_encrypted),
-            Argument::ArcisPubkey(position.owner_enc_pubkey),
-            Argument::PlaintextU128(position.size_nonce),
-            Argument::Account(position.key(), 8 + 32 + 8 + 1, 32), // size_usd_encrypted
-        ];
+        let args = ArgBuilder::new()
+            .x25519_pubkey(position.owner_enc_pubkey)
+            .plaintext_u128(position.collateral_nonce)
+            .account(position.key(), 8 + 32 + 8 + 1 + 32, 32) // collateral_usd_encrypted
+            .x25519_pubkey(client_pubkey)
+            .plaintext_u128(additional_collateral_nonce)
+            .encrypted_u64(additional_collateral_encrypted)
+            .x25519_pubkey(position.owner_enc_pubkey)
+            .plaintext_u128(position.size_nonce)
+            .account(position.key(), 8 + 32 + 8 + 1, 32) // size_usd_encrypted
+            .build();
 
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
@@ -343,10 +543,15 @@ pub mod perpetuals {
             computation_offset,
             args,
             None,
-            vec![AddCollateralCallback::callback_ix(&[
+            vec![AddCollateralCallback::callback_ix(
+                computation_offset,
+                &ctx.accounts.mxe_account,
+                &[
                 CallbackAccount { pubkey: position.key(), is_writable: true },
-            ])],
+                ]
+            )?],
             1,
+            0,  // cu_price_micro: priority fee in microlamports (0 = no priority fee)
         )?;
 
         Ok(())
@@ -355,11 +560,17 @@ pub mod perpetuals {
     #[arcium_callback(encrypted_ix = "add_collateral")]
     pub fn add_collateral_callback(
         ctx: Context<AddCollateralCallback>,
-        output: ComputationOutputs<AddCollateralOutput>,
+        output: SignedComputationOutputs<AddCollateralOutput>,
     ) -> Result<()> {
-        let collateral_output = match output {
-            ComputationOutputs::Success(AddCollateralOutput { field_0 }) => field_0,
-            _ => return Err(ErrorCode::AbortedComputation.into()),
+        let collateral_output = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account
+        ) {
+            Ok(AddCollateralOutput { field_0 }) => field_0,
+            Err(e) => {
+                msg!("Error: {}", e);
+                return Err(ErrorCode::AbortedComputation.into())
+            },
         };
 
         let position = &mut ctx.accounts.position;
@@ -379,16 +590,421 @@ pub mod perpetuals {
         Ok(())
     }
 
+    pub fn add_collateral_public(
+        ctx: Context<AddCollateralPublic>,
+        _position_id: u64,
+        params: AddCollateralPublicParams,
+    ) -> Result<()> {
+        // Validate inputs
+        require!(params.collateral > 0, ErrorCode::InvalidInput);
+        
+        let perpetuals = ctx.accounts.perpetuals.as_ref();
+        let pool = &mut ctx.accounts.pool;
+        let custody = &mut ctx.accounts.custody;
+        let collateral_custody = &mut ctx.accounts.collateral_custody;
+        let position = &mut ctx.accounts.position;
+        
+        // Verify position ownership
+        require!(
+            position.owner == ctx.accounts.owner.key(),
+            ErrorCode::InvalidPositionOwner
+        );
+        
+        // Get oracle prices
+        let token_price = get_price_from_oracle(
+            &custody.oracle,
+            &ctx.accounts.custody_oracle_account
+        )?;
+        
+        let collateral_price = get_price_from_oracle(
+            &collateral_custody.oracle,
+            &ctx.accounts.collateral_custody_oracle_account
+        )?;
+        
+        // Compute collateral value in USD
+        let collateral_usd = params.collateral
+            .checked_mul(collateral_price)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(10u64.pow(collateral_custody.decimals as u32))
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        msg!("Amount in: {}", params.collateral);
+        msg!("Collateral added in USD: {}", collateral_usd);
+        
+        // Decode current position values from plaintext storage
+        let mut current_size_bytes = [0u8; 8];
+        current_size_bytes.copy_from_slice(&position.size_usd_encrypted[..8]);
+        let current_size_usd = u64::from_le_bytes(current_size_bytes);
+        
+        let mut current_collateral_bytes = [0u8; 8];
+        current_collateral_bytes.copy_from_slice(&position.collateral_usd_encrypted[..8]);
+        let current_collateral_usd = u64::from_le_bytes(current_collateral_bytes);
+        
+        // Update position collateral
+        let new_collateral_usd = current_collateral_usd
+            .checked_add(collateral_usd)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        // Check leverage after adding collateral
+        let new_leverage = current_size_usd
+            .checked_mul(10000)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(new_collateral_usd)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        require!(
+            new_leverage >= custody.pricing.min_initial_leverage &&
+            new_leverage <= custody.pricing.max_initial_leverage,
+            ErrorCode::InvalidInput
+        );
+        
+        msg!("New leverage: {}x", new_leverage / 100);
+        
+        // Transfer tokens from user to custody
+        perpetuals.transfer_tokens_from_user(
+            ctx.accounts.funding_account.to_account_info(),
+            ctx.accounts.collateral_custody_token_account.to_account_info(),
+            ctx.accounts.owner.to_account_info(),
+            ctx.accounts.token_program.to_account_info(),
+            params.collateral,
+        )?;
+        
+        // Update custody stats
+        collateral_custody.assets.collateral = collateral_custody.assets.collateral
+            .checked_add(params.collateral)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        // Update position stats
+        let position_stats = if position.side == PositionSide::Long {
+            &mut collateral_custody.long_positions
+        } else {
+            &mut collateral_custody.short_positions
+        };
+        
+        position_stats.collateral_usd = position_stats.collateral_usd
+            .checked_add(collateral_usd)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        // Update pool AUM
+        pool.aum_usd = pool.aum_usd
+            .checked_add(collateral_usd as u128)
+            .ok_or(ErrorCode::MathOverflow)?;
+        
+        // Update position with new collateral (store as plaintext in encrypted fields)
+        let mut new_collateral_bytes = [0u8; 32];
+        new_collateral_bytes[..8].copy_from_slice(&new_collateral_usd.to_le_bytes());
+        position.collateral_usd_encrypted = new_collateral_bytes;
+        
+        position.update_time = Clock::get()?.unix_timestamp;
+        
+        // If custody and collateral_custody are the same, sync data
+        if position.side == PositionSide::Long {
+            // In the reference code, this clones collateral_custody to custody
+            // For simplicity in public version, we just ensure consistency
+            custody.assets.collateral = collateral_custody.assets.collateral;
+            custody.long_positions.collateral_usd = collateral_custody.long_positions.collateral_usd;
+        }
+        
+        emit!(CollateralAddedEvent {
+            position_id: position.position_id,
+            owner: position.owner,
+            new_collateral_encrypted: position.collateral_usd_encrypted,
+            new_leverage_encrypted: [0u8; 32], // Would be computed in encrypted version
+            nonce: 0,
+        });
+        
+        Ok(())
+    }
+
+    /// Public, non–encrypted version of closing a position.
+    /// Uses plaintext values stored in `size_usd_encrypted` / `collateral_usd_encrypted`
+    /// and performs minimal accounting suitable for tests.
+    pub fn close_position_public(
+        ctx: Context<ClosePositionPublic>,
+        position_id: u64,
+    ) -> Result<()> {
+        let perpetuals = ctx.accounts.perpetuals.as_ref();
+        let pool = &mut ctx.accounts.pool;
+        let custody = &mut ctx.accounts.custody;
+        let collateral_custody = &mut ctx.accounts.collateral_custody;
+        let position = &mut ctx.accounts.position;
+
+        // Permissions check – mirror open_position_public style
+        require!(
+            perpetuals.permissions.allow_close_position &&
+            custody.permissions.allow_close_position,
+            ErrorCode::InvalidInput
+        );
+
+        // Verify position ownership
+        require!(
+            position.owner == ctx.accounts.owner.key(),
+            ErrorCode::InvalidPositionOwner
+        );
+
+        // Decode current plaintext values from the "encrypted" fields
+        let mut size_bytes = [0u8; 8];
+        size_bytes.copy_from_slice(&position.size_usd_encrypted[..8]);
+        let current_size_usd = u64::from_le_bytes(size_bytes);
+
+        let mut collateral_bytes = [0u8; 8];
+        collateral_bytes.copy_from_slice(&position.collateral_usd_encrypted[..8]);
+        let current_collateral_usd = u64::from_le_bytes(collateral_bytes);
+
+        // Update custody and pool stats in a simplified way:
+        // - Reduce stats.size_usd by current_size_usd
+        // - Reduce stats.collateral_usd by current_collateral_usd
+        // - Decrement open_positions
+        let position_stats = if position.side == PositionSide::Long {
+            &mut custody.long_positions
+        } else {
+            &mut custody.short_positions
+        };
+
+        if position_stats.open_positions > 0 {
+            position_stats.open_positions -= 1;
+        }
+        position_stats.size_usd = position_stats
+            .size_usd
+            .saturating_sub(current_size_usd);
+        position_stats.collateral_usd = position_stats
+            .collateral_usd
+            .saturating_sub(current_collateral_usd);
+
+        // Pool AUM – subtract collateral in USD (stored in 1e-8 units, same as size_usd)
+        pool.aum_usd = pool
+            .aum_usd
+            .saturating_sub(current_collateral_usd as u128);
+
+        // Zero out position size & collateral in the "encrypted" fields
+        position.size_usd_encrypted = [0u8; 32];
+        position.collateral_usd_encrypted = [0u8; 32];
+        position.update_time = Clock::get()?.unix_timestamp;
+
+        // Emit a PositionClosedEvent with plaintext-encoded zeros
+        let mut zero_bytes = [0u8; 32];
+        // can_close_encrypted = 1 encoded in first byte for test purposes
+        let mut can_close_bytes = [0u8; 32];
+        can_close_bytes[0] = 1u8;
+
+        emit!(PositionClosedEvent {
+            position_id: position_id,
+            owner: position.owner,
+            realized_pnl_encrypted: zero_bytes,
+            final_balance_encrypted: zero_bytes,
+            can_close_encrypted: can_close_bytes,
+            nonce: 0,
+        });
+
+        Ok(())
+    }
+
+    /// Public, non–encrypted version of removing collateral.
+    /// Mirrors `add_collateral_public` but subtracts collateral instead.
+    pub fn remove_collateral_public(
+        ctx: Context<RemoveCollateralPublic>,
+        position_id: u64,
+        params: RemoveCollateralPublicParams,
+    ) -> Result<()> {
+        // Validate inputs
+        require!(params.collateral > 0, ErrorCode::InvalidInput);
+
+        let perpetuals = ctx.accounts.perpetuals.as_ref();
+        let pool = &mut ctx.accounts.pool;
+        let custody = &mut ctx.accounts.custody;
+        let collateral_custody = &mut ctx.accounts.collateral_custody;
+        let position = &mut ctx.accounts.position;
+
+        // Verify position ownership
+        require!(
+            position.owner == ctx.accounts.owner.key(),
+            ErrorCode::InvalidPositionOwner
+        );
+
+        // Get oracle prices
+        let collateral_price = get_price_from_oracle(
+            &collateral_custody.oracle,
+            &ctx.accounts.collateral_custody_oracle_account
+        )?;
+
+        // Compute collateral value in USD
+        let collateral_usd = params.collateral
+            .checked_mul(collateral_price)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(10u64.pow(collateral_custody.decimals as u32))
+            .ok_or(ErrorCode::MathOverflow)?;
+
+        msg!("Amount out: {}", params.collateral);
+        msg!("Collateral removed in USD: {}", collateral_usd);
+
+        // Decode current position values from plaintext storage
+        let mut size_bytes = [0u8; 8];
+        size_bytes.copy_from_slice(&position.size_usd_encrypted[..8]);
+        let current_size_usd = u64::from_le_bytes(size_bytes);
+
+        let mut collateral_bytes = [0u8; 8];
+        collateral_bytes.copy_from_slice(&position.collateral_usd_encrypted[..8]);
+        let current_collateral_usd = u64::from_le_bytes(collateral_bytes);
+
+        // Ensure we are not removing more collateral than we have
+        require!(
+            collateral_usd <= current_collateral_usd,
+            ErrorCode::InvalidInput
+        );
+
+        let new_collateral_usd = current_collateral_usd
+            .checked_sub(collateral_usd)
+            .ok_or(ErrorCode::MathOverflow)?;
+
+        // Check leverage after removing collateral
+        if new_collateral_usd > 0 {
+            let new_leverage = current_size_usd
+                .checked_mul(10000)
+                .ok_or(ErrorCode::MathOverflow)?
+                .checked_div(new_collateral_usd)
+                .ok_or(ErrorCode::MathOverflow)?;
+
+            require!(
+                new_leverage >= custody.pricing.min_initial_leverage &&
+                new_leverage <= custody.pricing.max_leverage,
+                ErrorCode::InvalidInput
+            );
+        }
+
+        // Update custody stats (reverse of add_collateral_public)
+        collateral_custody.assets.collateral = collateral_custody.assets.collateral
+            .saturating_sub(params.collateral);
+
+        // Update position stats
+        let position_stats = if position.side == PositionSide::Long {
+            &mut collateral_custody.long_positions
+        } else {
+            &mut collateral_custody.short_positions
+        };
+
+        position_stats.collateral_usd = position_stats.collateral_usd
+            .saturating_sub(collateral_usd);
+
+        // Update pool AUM
+        pool.aum_usd = pool.aum_usd
+            .saturating_sub(collateral_usd as u128);
+
+        // Update position with new collateral (store as plaintext in encrypted field)
+        let mut new_collateral_bytes = [0u8; 32];
+        new_collateral_bytes[..8].copy_from_slice(&new_collateral_usd.to_le_bytes());
+        position.collateral_usd_encrypted = new_collateral_bytes;
+        position.update_time = Clock::get()?.unix_timestamp;
+
+        // If custody and collateral_custody are the same, keep consistency
+        if position.side == PositionSide::Long {
+            custody.assets.collateral = collateral_custody.assets.collateral;
+            custody.long_positions.collateral_usd = collateral_custody.long_positions.collateral_usd;
+        }
+
+        emit!(CollateralRemovedEvent {
+            position_id: position_id,
+            owner: position.owner,
+            new_collateral_encrypted: position.collateral_usd_encrypted,
+            removed_amount_encrypted: [0u8; 32], // Plain public version – encode amount as 0
+            new_leverage_encrypted: [0u8; 32],   // Would be computed in encrypted version
+            nonce: 0,
+        });
+
+        Ok(())
+    }
+
+    /// Public, non–encrypted version of liquidating a position.
+    /// Uses plaintext values and a simplified liquidation rule suitable for testing.
+    pub fn liquidate_public(
+        ctx: Context<LiquidatePublic>,
+        position_id: u64,
+    ) -> Result<()> {
+        let perpetuals = ctx.accounts.perpetuals.as_ref();
+        let pool = &mut ctx.accounts.pool;
+        let custody = &mut ctx.accounts.custody;
+        let collateral_custody = &mut ctx.accounts.collateral_custody;
+        let position = &mut ctx.accounts.position;
+
+        // Basic permission check
+        require!(
+            perpetuals.permissions.allow_close_position,
+            ErrorCode::InvalidInput
+        );
+
+        // Decode plaintext size & collateral
+        let mut size_bytes = [0u8; 8];
+        size_bytes.copy_from_slice(&position.size_usd_encrypted[..8]);
+        let current_size_usd = u64::from_le_bytes(size_bytes);
+
+        let mut collateral_bytes = [0u8; 8];
+        collateral_bytes.copy_from_slice(&position.collateral_usd_encrypted[..8]);
+        let current_collateral_usd = u64::from_le_bytes(collateral_bytes);
+
+        // Fetch current price to estimate if position is liquidatable
+        let current_price = get_price_from_oracle(
+            &custody.oracle,
+            &ctx.accounts.custody_oracle_account
+        )?;
+
+        // Very simplified liquidation rule:
+        // If current_price moved by more than 50% against the position, allow liquidation.
+        let entry_price = position.entry_price;
+        let price_moved_against = if position.side == PositionSide::Long {
+            current_price < entry_price / 2
+        } else {
+            current_price > entry_price * 3 / 2
+        };
+
+        require!(price_moved_against, ErrorCode::InvalidInput);
+
+        // Update custody stats: remove size and collateral
+        let position_stats = if position.side == PositionSide::Long {
+            &mut custody.long_positions
+        } else {
+            &mut custody.short_positions
+        };
+
+        if position_stats.open_positions > 0 {
+            position_stats.open_positions -= 1;
+        }
+        position_stats.size_usd = position_stats.size_usd
+            .saturating_sub(current_size_usd);
+        position_stats.collateral_usd = position_stats.collateral_usd
+            .saturating_sub(current_collateral_usd);
+
+        // Pool AUM – deduct all collateral (simplified)
+        pool.aum_usd = pool.aum_usd
+            .saturating_sub(current_collateral_usd as u128);
+
+        // Zero out the position's "encrypted" values
+        position.size_usd_encrypted = [0u8; 32];
+        position.collateral_usd_encrypted = [0u8; 32];
+        position.update_time = Clock::get()?.unix_timestamp;
+
+        // Emit liquidation event with plaintext-encoded zeros
+        let mut zero_bytes = [0u8; 32];
+        let mut is_liquidatable_bytes = [0u8; 32];
+        is_liquidatable_bytes[0] = 1u8;
+
+        emit!(PositionLiquidatedEvent {
+            position_id: position_id,
+            owner: position.owner,
+            liquidator: ctx.accounts.liquidator.key(),
+            is_liquidatable_encrypted: is_liquidatable_bytes,
+            remaining_collateral_encrypted: zero_bytes,
+            penalty_encrypted: zero_bytes,
+            nonce: 0,
+        });
+
+        Ok(())
+    }
+
     pub fn init_remove_collateral_comp_def(
         ctx: Context<InitRemoveCollateralCompDef>,
     ) -> Result<()> {
         init_comp_def(
             ctx.accounts,
-            0,
-            Some(CircuitSource::OffChain(OffChainCircuitSource {
-                source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/remove_collateral.arcis".to_string(),
-                hash: [0; 32], // Hash verification not enforced yet
-            })),
+            None,
             None,
         )?;
         Ok(())
@@ -409,17 +1025,17 @@ pub mod perpetuals {
             ErrorCode::InvalidPositionOwner
         );
 
-        let args = vec![
-            Argument::ArcisPubkey(position.owner_enc_pubkey),
-            Argument::PlaintextU128(position.collateral_nonce),
-            Argument::Account(position.key(), 8 + 32 + 8 + 1 + 32, 32), // collateral_usd_encrypted
-            Argument::ArcisPubkey(client_pubkey),
-            Argument::PlaintextU128(remove_amount_nonce),
-            Argument::EncryptedU64(remove_amount_encrypted),
-            Argument::ArcisPubkey(position.owner_enc_pubkey),
-            Argument::PlaintextU128(position.size_nonce),
-            Argument::Account(position.key(), 8 + 32 + 8 + 1, 32), // size_usd_encrypted
-        ];
+        let args = ArgBuilder::new()
+            .x25519_pubkey(position.owner_enc_pubkey)
+            .plaintext_u128(position.collateral_nonce)
+            .account(position.key(), 8 + 32 + 8 + 1 + 32, 32) // collateral_usd_encrypted
+            .x25519_pubkey(client_pubkey)
+            .plaintext_u128(remove_amount_nonce)
+            .encrypted_u64(remove_amount_encrypted)
+            .x25519_pubkey(position.owner_enc_pubkey)
+            .plaintext_u128(position.size_nonce)
+            .account(position.key(), 8 + 32 + 8 + 1, 32) // size_usd_encrypted
+            .build();
 
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
@@ -428,10 +1044,15 @@ pub mod perpetuals {
             computation_offset,
             args,
             None,
-            vec![RemoveCollateralCallback::callback_ix(&[
+            vec![RemoveCollateralCallback::callback_ix(
+                computation_offset,
+                &ctx.accounts.mxe_account,
+                &[
                 CallbackAccount { pubkey: position.key(), is_writable: true },
-            ])],
+                ]
+            )?],
             1,
+            0,  // cu_price_micro: priority fee in microlamports (0 = no priority fee)
         )?;
 
         Ok(())
@@ -440,11 +1061,17 @@ pub mod perpetuals {
     #[arcium_callback(encrypted_ix = "remove_collateral")]
     pub fn remove_collateral_callback(
         ctx: Context<RemoveCollateralCallback>,
-        output: ComputationOutputs<RemoveCollateralOutput>,
+        output: SignedComputationOutputs<RemoveCollateralOutput>,
     ) -> Result<()> {
-        let collateral_output = match output {
-            ComputationOutputs::Success(RemoveCollateralOutput { field_0 }) => field_0,
-            _ => return Err(ErrorCode::AbortedComputation.into()),
+        let collateral_output = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account
+        ) {
+            Ok(RemoveCollateralOutput { field_0 }) => field_0,
+            Err(e) => {
+                msg!("Error: {}", e);
+                return Err(ErrorCode::AbortedComputation.into())
+            },
         };
 
         let position = &mut ctx.accounts.position;
@@ -474,11 +1101,7 @@ pub mod perpetuals {
     ) -> Result<()> {
         init_comp_def(
             ctx.accounts,
-            0,
-            Some(CircuitSource::OffChain(OffChainCircuitSource {
-                source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/liquidate.arcis".to_string(),
-                hash: [0; 32], // Hash verification not enforced yet
-            })),
+            None,
             None,
         )?;
         Ok(())
@@ -502,19 +1125,19 @@ pub mod perpetuals {
         let position = &mut ctx.accounts.position;
         position.liquidator = ctx.accounts.liquidator.key();
 
-        let args = vec![
-            Argument::ArcisPubkey(client_pubkey),
-            Argument::PlaintextU128(nonce),
-            Argument::ArcisPubkey(owner_enc_pubkey),
-            Argument::PlaintextU128(size_nonce),
-            Argument::Account(position_key, 8 + 32 + 8 + 1, 32), // size_usd_encrypted
-            Argument::ArcisPubkey(owner_enc_pubkey),
-            Argument::PlaintextU128(collateral_nonce),
-            Argument::Account(position_key, 8 + 32 + 8 + 1 + 32, 32), // collateral_usd_encrypted
-            Argument::PlaintextU64(entry_price),
-            Argument::PlaintextU64(current_price),
-            Argument::PlaintextU8(side),
-        ];
+        let args = ArgBuilder::new()
+            .x25519_pubkey(client_pubkey)
+            .plaintext_u128(nonce)
+            .x25519_pubkey(owner_enc_pubkey)
+            .plaintext_u128(size_nonce)
+            .account(position_key, 8 + 32 + 8 + 1, 32) // size_usd_encrypted
+            .x25519_pubkey(owner_enc_pubkey)
+            .plaintext_u128(collateral_nonce)
+            .account(position_key, 8 + 32 + 8 + 1 + 32, 32) // collateral_usd_encrypted
+            .plaintext_u64(entry_price)
+            .plaintext_u64(current_price)
+            .plaintext_u8(side)
+            .build();
 
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
@@ -523,10 +1146,15 @@ pub mod perpetuals {
             computation_offset,
             args,
             None,
-            vec![LiquidateCallback::callback_ix(&[
+            vec![LiquidateCallback::callback_ix(
+                computation_offset,
+                &ctx.accounts.mxe_account,
+                &[
                 CallbackAccount { pubkey: position_key, is_writable: true },
-            ])],
+                ]
+            )?],
             1,
+            0,  // cu_price_micro: priority fee in microlamports (0 = no priority fee)
         )?;
 
         Ok(())
@@ -535,11 +1163,17 @@ pub mod perpetuals {
     #[arcium_callback(encrypted_ix = "liquidate")]
     pub fn liquidate_callback(
         ctx: Context<LiquidateCallback>,
-        output: ComputationOutputs<LiquidateOutput>,
+        output: SignedComputationOutputs<LiquidateOutput>,
     ) -> Result<()> {
-        let liquidation_output = match output {
-            ComputationOutputs::Success(LiquidateOutput { field_0 }) => field_0,
-            _ => return Err(ErrorCode::AbortedComputation.into()),
+        let liquidation_output = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account
+        ) {
+            Ok(LiquidateOutput { field_0 }) => field_0,
+            Err(e) => {
+                msg!("Error: {}", e);
+                return Err(ErrorCode::AbortedComputation.into())
+            },
         };
 
         let position = &mut ctx.accounts.position;
@@ -1749,19 +2383,19 @@ pub struct OpenPosition<'info> {
     pub mxe_account: Account<'info, MXEAccount>,
     #[account(
         mut,
-        address = derive_mempool_pda!()
+        address = derive_mempool_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: mempool_account, checked by the arcium program.
     pub mempool_account: UncheckedAccount<'info>,
     #[account(
         mut,
-        address = derive_execpool_pda!()
+        address = derive_execpool_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: executing_pool, checked by the arcium program.
     pub executing_pool: UncheckedAccount<'info>,
     #[account(
         mut,
-        address = derive_comp_pda!(computation_offset)
+        address = derive_comp_pda!(computation_offset, mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: computation_account, checked by the arcium program.
     pub computation_account: UncheckedAccount<'info>,
@@ -1803,11 +2437,98 @@ pub struct OpenPositionCallback<'info> {
         address = derive_comp_def_pda!(COMP_DEF_OFFSET_OPEN_POSITION)
     )]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: computation_account, checked by arcium program
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    pub cluster_account: Account<'info, Cluster>,
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
-    /// CHECK: instructions_sysvar, checked by the account constraint
+    /// CHECK: instructions_sysvar
     pub instructions_sysvar: AccountInfo<'info>,
     #[account(mut)]
     pub position: Account<'info, Position>,
+}
+
+#[derive(Accounts)]
+#[instruction(position_id: u64)]
+pub struct OpenPositionPublic<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    
+    #[account(
+        mut,
+        constraint = funding_account.mint == collateral_custody.mint,
+        has_one = owner
+    )]
+    pub funding_account: Box<Account<'info, TokenAccount>>,
+    
+    /// CHECK: Transfer authority PDA
+    #[account(
+        seeds = [b"transfer_authority"],
+        bump = perpetuals.transfer_authority_bump
+    )]
+    pub transfer_authority: AccountInfo<'info>,
+    
+    #[account(
+        seeds = [b"perpetuals"],
+        bump = perpetuals.perpetuals_bump
+    )]
+    pub perpetuals: Box<Account<'info, Perpetuals>>,
+    
+    #[account(
+        mut,
+        seeds = [b"pool", perpetuals.pools.len().to_le_bytes().as_ref()],
+        bump = pool.bump
+    )]
+    pub pool: Box<Account<'info, Pool>>,
+    
+    #[account(
+        init,
+        payer = owner,
+        space = 8 + Position::INIT_SPACE,
+        seeds = [b"position", owner.key().as_ref(), position_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub position: Account<'info, Position>,
+    
+    #[account(
+        mut,
+        seeds = [b"custody", pool.key().as_ref(), custody.mint.as_ref()],
+        bump = custody.bump
+    )]
+    pub custody: Box<Account<'info, Custody>>,
+    
+    /// CHECK: oracle account for the position token
+    #[account(
+        constraint = custody_oracle_account.key() == custody.oracle.oracle_account
+    )]
+    pub custody_oracle_account: AccountInfo<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"custody", pool.key().as_ref(), collateral_custody.mint.as_ref()],
+        bump = collateral_custody.bump
+    )]
+    pub collateral_custody: Box<Account<'info, Custody>>,
+    
+    /// CHECK: oracle account for the collateral token
+    #[account(
+        constraint = collateral_custody_oracle_account.key() == collateral_custody.oracle.oracle_account
+    )]
+    pub collateral_custody_oracle_account: AccountInfo<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"custody_token_account",
+                 pool.key().as_ref(),
+                 collateral_custody.mint.as_ref()],
+        bump = collateral_custody.token_account_bump
+    )]
+    pub collateral_custody_token_account: Box<Account<'info, TokenAccount>>,
+    
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
 }
 
 #[init_computation_definition_accounts("calculate_position_value", payer)]
@@ -1848,19 +2569,19 @@ pub struct CalculatePositionValue<'info> {
     pub mxe_account: Account<'info, MXEAccount>,
     #[account(
         mut,
-        address = derive_mempool_pda!()
+        address = derive_mempool_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: mempool_account, checked by the arcium program.
     pub mempool_account: UncheckedAccount<'info>,
     #[account(
         mut,
-        address = derive_execpool_pda!()
+        address = derive_execpool_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: executing_pool, checked by the arcium program.
     pub executing_pool: UncheckedAccount<'info>,
     #[account(
         mut,
-        address = derive_comp_pda!(computation_offset)
+        address = derive_comp_pda!(computation_offset, mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: computation_account, checked by the arcium program.
     pub computation_account: UncheckedAccount<'info>,
@@ -1900,8 +2621,14 @@ pub struct CalculatePositionValueCallback<'info> {
         address = derive_comp_def_pda!(COMP_DEF_OFFSET_CALCULATE_POSITION_VALUE)
     )]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: computation_account, checked by arcium program
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    pub cluster_account: Account<'info, Cluster>,
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
-    /// CHECK: instructions_sysvar, checked by the account constraint
+    /// CHECK: instructions_sysvar
     pub instructions_sysvar: AccountInfo<'info>,
     #[account(mut)]
     pub position: Account<'info, Position>,
@@ -1947,19 +2674,19 @@ pub struct ClosePosition<'info> {
     pub mxe_account: Account<'info, MXEAccount>,
     #[account(
         mut,
-        address = derive_mempool_pda!()
+        address = derive_mempool_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: mempool_account, checked by the arcium program.
     pub mempool_account: UncheckedAccount<'info>,
     #[account(
         mut,
-        address = derive_execpool_pda!()
+        address = derive_execpool_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: executing_pool, checked by the arcium program.
     pub executing_pool: UncheckedAccount<'info>,
     #[account(
         mut,
-        address = derive_comp_pda!(computation_offset)
+        address = derive_comp_pda!(computation_offset, mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: computation_account, checked by the arcium program.
     pub computation_account: UncheckedAccount<'info>,
@@ -1999,8 +2726,14 @@ pub struct ClosePositionCallback<'info> {
         address = derive_comp_def_pda!(COMP_DEF_OFFSET_CLOSE_POSITION)
     )]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: computation_account, checked by arcium program
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    pub cluster_account: Account<'info, Cluster>,
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
-    /// CHECK: instructions_sysvar, checked by the account constraint
+    /// CHECK: instructions_sysvar
     pub instructions_sysvar: AccountInfo<'info>,
     #[account(mut)]
     pub position: Account<'info, Position>,
@@ -2046,19 +2779,19 @@ pub struct AddCollateral<'info> {
     pub mxe_account: Account<'info, MXEAccount>,
     #[account(
         mut,
-        address = derive_mempool_pda!()
+        address = derive_mempool_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: mempool_account, checked by the arcium program.
     pub mempool_account: UncheckedAccount<'info>,
     #[account(
         mut,
-        address = derive_execpool_pda!()
+        address = derive_execpool_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: executing_pool, checked by the arcium program.
     pub executing_pool: UncheckedAccount<'info>,
     #[account(
         mut,
-        address = derive_comp_pda!(computation_offset)
+        address = derive_comp_pda!(computation_offset, mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: computation_account, checked by the arcium program.
     pub computation_account: UncheckedAccount<'info>,
@@ -2098,11 +2831,294 @@ pub struct AddCollateralCallback<'info> {
         address = derive_comp_def_pda!(COMP_DEF_OFFSET_ADD_COLLATERAL)
     )]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: computation_account, checked by arcium program
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    pub cluster_account: Account<'info, Cluster>,
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
-    /// CHECK: instructions_sysvar, checked by the account constraint
+    /// CHECK: instructions_sysvar
     pub instructions_sysvar: AccountInfo<'info>,
     #[account(mut)]
     pub position: Account<'info, Position>,
+}
+
+#[derive(Accounts)]
+#[instruction(position_id: u64)]
+pub struct AddCollateralPublic<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    
+    #[account(
+        mut,
+        constraint = funding_account.mint == collateral_custody.mint,
+        has_one = owner
+    )]
+    pub funding_account: Box<Account<'info, TokenAccount>>,
+    
+    /// CHECK: Transfer authority PDA
+    #[account(
+        seeds = [b"transfer_authority"],
+        bump = perpetuals.transfer_authority_bump
+    )]
+    pub transfer_authority: AccountInfo<'info>,
+    
+    #[account(
+        seeds = [b"perpetuals"],
+        bump = perpetuals.perpetuals_bump
+    )]
+    pub perpetuals: Box<Account<'info, Perpetuals>>,
+    
+    #[account(
+        mut,
+        seeds = [b"pool", perpetuals.pools.len().to_le_bytes().as_ref()],
+        bump = pool.bump
+    )]
+    pub pool: Box<Account<'info, Pool>>,
+    
+    #[account(
+        mut,
+        has_one = owner,
+        seeds = [b"position", owner.key().as_ref(), position_id.to_le_bytes().as_ref()],
+        bump = position.bump
+    )]
+    pub position: Account<'info, Position>,
+    
+    #[account(
+        mut,
+        seeds = [b"custody", pool.key().as_ref(), custody.mint.as_ref()],
+        bump = custody.bump
+    )]
+    pub custody: Box<Account<'info, Custody>>,
+    
+    /// CHECK: oracle account for the position token
+    #[account(
+        constraint = custody_oracle_account.key() == custody.oracle.oracle_account
+    )]
+    pub custody_oracle_account: AccountInfo<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"custody", pool.key().as_ref(), collateral_custody.mint.as_ref()],
+        bump = collateral_custody.bump
+    )]
+    pub collateral_custody: Box<Account<'info, Custody>>,
+    
+    /// CHECK: oracle account for the collateral token
+    #[account(
+        constraint = collateral_custody_oracle_account.key() == collateral_custody.oracle.oracle_account
+    )]
+    pub collateral_custody_oracle_account: AccountInfo<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"custody_token_account",
+                 pool.key().as_ref(),
+                 collateral_custody.mint.as_ref()],
+        bump = collateral_custody.token_account_bump
+    )]
+    pub collateral_custody_token_account: Box<Account<'info, TokenAccount>>,
+    
+    pub token_program: Program<'info, Token>,
+}
+
+/// Public accounts context for closing a position without Arcium.
+#[derive(Accounts)]
+#[instruction(position_id: u64)]
+pub struct ClosePositionPublic<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    #[account(
+        seeds = [b"perpetuals"],
+        bump = perpetuals.perpetuals_bump
+    )]
+    pub perpetuals: Box<Account<'info, Perpetuals>>,
+
+    #[account(
+        mut,
+        seeds = [b"pool", perpetuals.pools.len().to_le_bytes().as_ref()],
+        bump = pool.bump
+    )]
+    pub pool: Box<Account<'info, Pool>>,
+
+    #[account(
+        mut,
+        has_one = owner,
+        seeds = [b"position", owner.key().as_ref(), position_id.to_le_bytes().as_ref()],
+        bump = position.bump
+    )]
+    pub position: Account<'info, Position>,
+
+    #[account(
+        mut,
+        seeds = [b"custody", pool.key().as_ref(), custody.mint.as_ref()],
+        bump = custody.bump
+    )]
+    pub custody: Box<Account<'info, Custody>>,
+
+    /// CHECK: oracle account for the position token
+    #[account(
+        constraint = custody_oracle_account.key() == custody.oracle.oracle_account
+    )]
+    pub custody_oracle_account: AccountInfo<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"custody", pool.key().as_ref(), collateral_custody.mint.as_ref()],
+        bump = collateral_custody.bump
+    )]
+    pub collateral_custody: Box<Account<'info, Custody>>,
+
+    /// CHECK: oracle account for the collateral token
+    #[account(
+        constraint = collateral_custody_oracle_account.key() == collateral_custody.oracle.oracle_account
+    )]
+    pub collateral_custody_oracle_account: AccountInfo<'info>,
+}
+
+/// Public accounts context for removing collateral without Arcium.
+#[derive(Accounts)]
+#[instruction(position_id: u64)]
+pub struct RemoveCollateralPublic<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    #[account(
+        mut,
+        constraint = funding_account.mint == collateral_custody.mint,
+        has_one = owner
+    )]
+    pub funding_account: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        seeds = [b"perpetuals"],
+        bump = perpetuals.perpetuals_bump
+    )]
+    pub perpetuals: Box<Account<'info, Perpetuals>>,
+
+    #[account(
+        mut,
+        seeds = [b"pool", perpetuals.pools.len().to_le_bytes().as_ref()],
+        bump = pool.bump
+    )]
+    pub pool: Box<Account<'info, Pool>>,
+
+    #[account(
+        mut,
+        has_one = owner,
+        seeds = [b"position", owner.key().as_ref(), position_id.to_le_bytes().as_ref()],
+        bump = position.bump
+    )]
+    pub position: Account<'info, Position>,
+
+    #[account(
+        mut,
+        seeds = [b"custody", pool.key().as_ref(), custody.mint.as_ref()],
+        bump = custody.bump
+    )]
+    pub custody: Box<Account<'info, Custody>>,
+
+    /// CHECK: oracle account for the position token
+    #[account(
+        constraint = custody_oracle_account.key() == custody.oracle.oracle_account
+    )]
+    pub custody_oracle_account: AccountInfo<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"custody", pool.key().as_ref(), collateral_custody.mint.as_ref()],
+        bump = collateral_custody.bump
+    )]
+    pub collateral_custody: Box<Account<'info, Custody>>,
+
+    /// CHECK: oracle account for the collateral token
+    #[account(
+        constraint = collateral_custody_oracle_account.key() == collateral_custody.oracle.oracle_account
+    )]
+    pub collateral_custody_oracle_account: AccountInfo<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"custody_token_account",
+                 pool.key().as_ref(),
+                 collateral_custody.mint.as_ref()],
+        bump = collateral_custody.token_account_bump
+    )]
+    pub collateral_custody_token_account: Box<Account<'info, TokenAccount>>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+/// Public accounts context for liquidating a position without Arcium.
+#[derive(Accounts)]
+#[instruction(position_id: u64)]
+pub struct LiquidatePublic<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    /// Liquidator who triggers this public liquidation
+    #[account(mut)]
+    pub liquidator: Signer<'info>,
+
+    #[account(
+        seeds = [b"perpetuals"],
+        bump = perpetuals.perpetuals_bump
+    )]
+    pub perpetuals: Box<Account<'info, Perpetuals>>,
+
+    #[account(
+        mut,
+        seeds = [b"pool", perpetuals.pools.len().to_le_bytes().as_ref()],
+        bump = pool.bump
+    )]
+    pub pool: Box<Account<'info, Pool>>,
+
+    #[account(
+        mut,
+        has_one = owner,
+        seeds = [b"position", owner.key().as_ref(), position_id.to_le_bytes().as_ref()],
+        bump = position.bump
+    )]
+    pub position: Account<'info, Position>,
+
+    #[account(
+        mut,
+        seeds = [b"custody", pool.key().as_ref(), custody.mint.as_ref()],
+        bump = custody.bump
+    )]
+    pub custody: Box<Account<'info, Custody>>,
+
+    /// CHECK: oracle account for the position token
+    #[account(
+        constraint = custody_oracle_account.key() == custody.oracle.oracle_account
+    )]
+    pub custody_oracle_account: AccountInfo<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"custody", pool.key().as_ref(), collateral_custody.mint.as_ref()],
+        bump = collateral_custody.bump
+    )]
+    pub collateral_custody: Box<Account<'info, Custody>>,
+
+    /// CHECK: oracle account for the collateral token
+    #[account(
+        constraint = collateral_custody_oracle_account.key() == collateral_custody.oracle.oracle_account
+    )]
+    pub collateral_custody_oracle_account: AccountInfo<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"custody_token_account",
+                 pool.key().as_ref(),
+                 collateral_custody.mint.as_ref()],
+        bump = collateral_custody.token_account_bump
+    )]
+    pub collateral_custody_token_account: Box<Account<'info, TokenAccount>>,
+
+    pub token_program: Program<'info, Token>,
 }
 
 #[init_computation_definition_accounts("remove_collateral", payer)]
@@ -2145,19 +3161,19 @@ pub struct RemoveCollateral<'info> {
     pub mxe_account: Account<'info, MXEAccount>,
     #[account(
         mut,
-        address = derive_mempool_pda!()
+        address = derive_mempool_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: mempool_account, checked by the arcium program.
     pub mempool_account: UncheckedAccount<'info>,
     #[account(
         mut,
-        address = derive_execpool_pda!()
+        address = derive_execpool_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: executing_pool, checked by the arcium program.
     pub executing_pool: UncheckedAccount<'info>,
     #[account(
         mut,
-        address = derive_comp_pda!(computation_offset)
+        address = derive_comp_pda!(computation_offset, mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: computation_account, checked by the arcium program.
     pub computation_account: UncheckedAccount<'info>,
@@ -2197,8 +3213,14 @@ pub struct RemoveCollateralCallback<'info> {
         address = derive_comp_def_pda!(COMP_DEF_OFFSET_REMOVE_COLLATERAL)
     )]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: computation_account, checked by arcium program
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    pub cluster_account: Account<'info, Cluster>,
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
-    /// CHECK: instructions_sysvar, checked by the account constraint
+    /// CHECK: instructions_sysvar
     pub instructions_sysvar: AccountInfo<'info>,
     #[account(mut)]
     pub position: Account<'info, Position>,
@@ -2245,19 +3267,19 @@ pub struct Liquidate<'info> {
     pub mxe_account: Account<'info, MXEAccount>,
     #[account(
         mut,
-        address = derive_mempool_pda!()
+        address = derive_mempool_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: mempool_account, checked by the arcium program.
     pub mempool_account: UncheckedAccount<'info>,
     #[account(
         mut,
-        address = derive_execpool_pda!()
+        address = derive_execpool_pda!(mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: executing_pool, checked by the arcium program.
     pub executing_pool: UncheckedAccount<'info>,
     #[account(
         mut,
-        address = derive_comp_pda!(computation_offset)
+        address = derive_comp_pda!(computation_offset, mxe_account, ErrorCode::ClusterNotSet)
     )]
     /// CHECK: computation_account, checked by the arcium program.
     pub computation_account: UncheckedAccount<'info>,
@@ -2297,8 +3319,14 @@ pub struct LiquidateCallback<'info> {
         address = derive_comp_def_pda!(COMP_DEF_OFFSET_LIQUIDATE)
     )]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: computation_account, checked by arcium program
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    pub cluster_account: Account<'info, Cluster>,
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
-    /// CHECK: instructions_sysvar, checked by the account constraint
+    /// CHECK: instructions_sysvar
     pub instructions_sysvar: AccountInfo<'info>,
     #[account(mut)]
     pub position: Account<'info, Position>,
@@ -2885,7 +3913,6 @@ pub struct AddPool<'info> {
         bump
     )]
     pub transfer_authority: AccountInfo<'info>,
-    #[account(mut)]
     pub perpetuals: Account<'info, Perpetuals>,
     #[account(
         init,
@@ -2921,7 +3948,6 @@ pub struct RemovePool<'info> {
     /// CHECK: Transfer authority PDA
     #[account(mut)]
     pub transfer_authority: AccountInfo<'info>,
-    #[account(mut)]
     pub perpetuals: Account<'info, Perpetuals>,
     #[account(
         mut,
@@ -3102,6 +4128,777 @@ impl CustomOracle {
     }
 }
 
+    // ============================================================================
+    // Order Matching DEX Instructions
+    // ============================================================================
+
+    /// Initialize a new market
+    pub fn initialize_market(
+        ctx: Context<InitializeMarket>,
+        market_id: u16,
+        base_asset_mint: Pubkey,
+        quote_asset_mint: Pubkey,
+        tick_size: u64,
+        min_order_size: u64,
+        max_order_size: u64,
+        maker_fee_bps: u16,
+        taker_fee_bps: u16,
+        epoch_duration_slots: u64,
+    ) -> Result<()> {
+        let market_state = &mut ctx.accounts.market_state;
+        market_state.market_id = market_id;
+        market_state.base_asset_mint = base_asset_mint;
+        market_state.quote_asset_mint = quote_asset_mint;
+        market_state.tick_size = tick_size;
+        market_state.min_order_size = min_order_size;
+        market_state.max_order_size = max_order_size;
+        market_state.maker_fee_bps = maker_fee_bps;
+        market_state.taker_fee_bps = taker_fee_bps;
+        market_state.engine_state_ciphertext = Vec::new();
+        market_state.engine_state_version = 0;
+        market_state.mark_price = 0;
+        market_state.index_price = 0;
+        market_state.funding_rate = 0;
+        market_state.last_funding_update_slot = Clock::get()?.slot;
+        market_state.current_epoch_id = 0;
+        market_state.epoch_start_slot = Clock::get()?.slot;
+        market_state.epoch_duration_slots = epoch_duration_slots;
+        market_state.status = MarketStatus::Active;
+        market_state.bump = ctx.bumps.market_state;
+
+        Ok(())
+    }
+
+    /// Update market configuration
+    pub fn update_market_config(
+        ctx: Context<UpdateMarketConfig>,
+        tick_size: Option<u64>,
+        min_order_size: Option<u64>,
+        max_order_size: Option<u64>,
+        maker_fee_bps: Option<u16>,
+        taker_fee_bps: Option<u16>,
+    ) -> Result<()> {
+        let market_state = &mut ctx.accounts.market_state;
+        
+        if let Some(ts) = tick_size {
+            market_state.tick_size = ts;
+        }
+        if let Some(mos) = min_order_size {
+            market_state.min_order_size = mos;
+        }
+        if let Some(mxs) = max_order_size {
+            market_state.max_order_size = mxs;
+        }
+        if let Some(mf) = maker_fee_bps {
+            market_state.maker_fee_bps = mf;
+        }
+        if let Some(tf) = taker_fee_bps {
+            market_state.taker_fee_bps = tf;
+        }
+
+        Ok(())
+    }
+
+    /// Update market prices from oracle
+    pub fn update_market_prices(
+        ctx: Context<UpdateMarketPrices>,
+        mark_price: u64,
+        index_price: u64,
+    ) -> Result<()> {
+        let market_state = &mut ctx.accounts.market_state;
+        market_state.mark_price = mark_price;
+        market_state.index_price = index_price;
+        Ok(())
+    }
+
+    /// Initialize trader state
+    pub fn initialize_trader_state(
+        ctx: Context<InitializeTraderState>,
+        margin_mode: MarginMode,
+    ) -> Result<()> {
+        let trader_state = &mut ctx.accounts.trader_state;
+        trader_state.trader = ctx.accounts.trader.key();
+        trader_state.risk_state_ciphertext = Vec::new();
+        trader_state.risk_state_version = 0;
+        trader_state.margin_mode = margin_mode;
+        trader_state.has_open_positions = false;
+        trader_state.last_update_slot = Clock::get()?.slot;
+        trader_state.collateral_account = ctx.accounts.confidential_account.key();
+        trader_state.isolated_margin_accounts = Vec::new();
+        trader_state.bump = ctx.bumps.trader_state;
+
+        Ok(())
+    }
+
+    /// Deposit collateral (public SPL → Confidential SPL)
+    pub fn deposit_collateral_confidential(
+        ctx: Context<DepositCollateralConfidential>,
+        amount: u64,
+    ) -> Result<()> {
+        // Transfer public SPL to program vault
+        anchor_spl::token::transfer(
+            CpiContext::new(
+                &ctx.accounts.token_program,
+                &Transfer {
+                    from: ctx.accounts.trader_token_account.to_account_info(),
+                    to: ctx.accounts.vault_account.to_account_info(),
+                    authority: ctx.accounts.trader.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+
+        // Wrap to Confidential SPL (simulated)
+        // Note: In real implementation, this would call Confidential Transfer Adapter
+        // For simulation, the transfer above is sufficient
+
+        // Update encrypted trader state via MPC would happen here
+        // For now, just update the version
+        ctx.accounts.trader_state.risk_state_version += 1;
+        ctx.accounts.trader_state.last_update_slot = Clock::get()?.slot;
+
+        Ok(())
+    }
+
+    /// Withdraw collateral (Confidential SPL → Public SPL)
+    pub fn withdraw_collateral_confidential(
+        ctx: Context<WithdrawCollateralConfidential>,
+        amount: u64,
+    ) -> Result<()> {
+        // MPC validation would happen here to check sufficient margin
+        // For now, just transfer from vault
+
+        // Unwrap from Confidential SPL (simulated)
+        // In real implementation, would call Confidential Transfer Adapter
+        // For simulation, transfer from vault to trader
+        // Note: This requires proper vault authority setup
+
+        // Update encrypted trader state via MPC would happen here
+        ctx.accounts.trader_state.risk_state_version += 1;
+        ctx.accounts.trader_state.last_update_slot = Clock::get()?.slot;
+
+        Ok(())
+    }
+
+    /// Submit order with encrypted size
+    pub fn submit_order(
+        ctx: Context<SubmitOrder>,
+        price: u64,
+        side: OrderSide,
+        enc_size: Vec<u8>,  // Enc<Shared, u64> serialized
+        order_type: OrderType,
+        time_in_force: TimeInForce,
+    ) -> Result<()> {
+        // Validate public inputs
+        require!(
+            price >= ctx.accounts.market_state.tick_size,
+            ErrorCode::InvalidPrice
+        );
+        require!(
+            ctx.accounts.market_state.status == MarketStatus::Active,
+            ErrorCode::MarketNotActive
+        );
+
+        // Check epoch boundaries
+        let current_slot = Clock::get()?.slot;
+        let epoch_end_slot = ctx.accounts.market_state.epoch_start_slot
+            + ctx.accounts.market_state.epoch_duration_slots;
+
+        if current_slot >= epoch_end_slot {
+            return Err(ErrorCode::EpochEnded.into());
+        }
+
+        // Load current order batch (simplified - in real implementation would decrypt/encrypt)
+        // For now, just append to ciphertext
+        ctx.accounts.epoch_state.order_batch_ciphertext.extend_from_slice(&enc_size);
+
+        // Update price ticks
+        if !ctx.accounts.epoch_state.price_ticks.contains(&price) {
+            ctx.accounts.epoch_state.price_ticks.push(price);
+            ctx.accounts.epoch_state.price_ticks.sort();
+        }
+
+        Ok(())
+    }
+
+    /// Settle epoch - trigger MPC matching
+    pub fn settle_epoch(
+        ctx: Context<SettleEpoch>,
+        computation_offset: u64,
+    ) -> Result<()> {
+        require!(
+            !ctx.accounts.epoch_state.is_settled,
+            ErrorCode::EpochAlreadySettled
+        );
+
+        let current_slot = Clock::get()?.slot;
+        require!(
+            current_slot >= ctx.accounts.epoch_state.end_slot,
+            ErrorCode::EpochNotEnded
+        );
+
+        // Prepare MPC inputs
+        let epoch_orders = ctx.accounts.epoch_state.order_batch_ciphertext.clone();
+        let engine_state = ctx.accounts.market_state.engine_state_ciphertext.clone();
+        let public_prices = ctx.accounts.epoch_state.price_ticks.clone();
+        let mark_price = ctx.accounts.market_state.mark_price;
+
+        // In real implementation, would invoke Arcium computation here
+        // For now, just mark as settled
+        ctx.accounts.epoch_state.is_settled = true;
+        ctx.accounts.epoch_state.settlement_slot = Some(current_slot);
+
+        Ok(())
+    }
+
+    /// Cancel order
+    pub fn cancel_order(
+        ctx: Context<CancelOrder>,
+    ) -> Result<()> {
+        // In real implementation, would remove order from encrypted batch
+        // For now, just a placeholder
+        Ok(())
+    }
+
+    /// Cancel all orders for trader
+    pub fn cancel_all_orders(
+        ctx: Context<CancelAllOrders>,
+    ) -> Result<()> {
+        // In real implementation, would remove all trader's orders from encrypted batch
+        // For now, just a placeholder
+        Ok(())
+    }
+
+    // ============================================================================
+    // Mixer Pool Instructions
+    // ============================================================================
+
+    /// Initialize computation definition for mix_positions
+    pub fn init_mix_positions_comp_def(ctx: Context<InitMixPositionsCompDef>) -> Result<()> {
+        init_comp_def(
+            ctx.accounts,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://mgk-solana.s3.ap-southeast-2.amazonaws.com/mix_positions.arcis".to_string(),
+                hash: circuit_hash!("mix_positions"),
+            })),
+            None,
+        )?;
+        Ok(())
+    }
+
+    /// Initialize a mixer pool for a market
+    #[instruction(market_id: u16)]
+    pub fn initialize_mixer_pool(
+        ctx: Context<InitializeMixerPool>,
+        pool: Pubkey,
+        mix_interval_slots: u64,
+    ) -> Result<()> {
+        let mixer_pool = &mut ctx.accounts.mixer_pool;
+        mixer_pool.market_id = market_id;
+        mixer_pool.aggregated_state_ciphertext = Vec::new();
+        mixer_pool.position_registry = Vec::new();
+        mixer_pool.net_open_interest = 0;
+        mixer_pool.total_collateral = 0;
+        mixer_pool.position_count = 0;
+        mixer_pool.pool = pool;
+        mixer_pool.last_mix_slot = Clock::get()?.slot;
+        mixer_pool.mix_interval_slots = mix_interval_slots;
+        mixer_pool.base_asset_mint = ctx.accounts.base_asset_mint.key();
+        mixer_pool.quote_asset_mint = ctx.accounts.quote_asset_mint.key();
+        mixer_pool.bump = ctx.bumps.mixer_pool;
+
+        Ok(())
+    }
+
+    /// Submit a position to the mixer pool (encrypted)
+    pub fn submit_position_to_mixer(
+        ctx: Context<SubmitPositionToMixer>,
+        position_ciphertext: Vec<u8>,  // Enc<Shared, MixerPosition>
+        nonce: u128,
+    ) -> Result<()> {
+        let mixer_pool = &mut ctx.accounts.mixer_pool;
+        
+        // Check if position already exists for this trader
+        let existing_index = mixer_pool.position_registry.iter()
+            .position(|ref_pos| ref_pos.trader == ctx.accounts.trader.key());
+        
+        let position_ref = PositionRef {
+            trader: ctx.accounts.trader.key(),
+            position_ciphertext: position_ciphertext.clone(),
+            nonce,
+        };
+
+        if let Some(index) = existing_index {
+            // Update existing position
+            mixer_pool.position_registry[index] = position_ref;
+        } else {
+            // Add new position
+            require!(
+                mixer_pool.position_registry.len() < 1000,
+                ErrorCode::InvalidInput
+            );
+            mixer_pool.position_registry.push(position_ref);
+            mixer_pool.position_count += 1;
+        }
+
+        Ok(())
+    }
+
+    /// Mix positions: Aggregate all positions in the mixer pool
+    pub fn mix_positions(
+        ctx: Context<MixPositions>,
+        computation_offset: u64,
+    ) -> Result<()> {
+        let mixer_pool = &mut ctx.accounts.mixer_pool;
+        let current_slot = Clock::get()?.slot;
+        
+        // Check if it's time to mix (epoch-based)
+        require!(
+            current_slot >= mixer_pool.last_mix_slot + mixer_pool.mix_interval_slots,
+            ErrorCode::InvalidInput
+        );
+
+        // Prepare positions for MPC (up to 1000 positions)
+        let position_count = mixer_pool.position_registry.len().min(1000) as u16;
+        
+        // Build encrypted position arguments
+        let mut args = ArgBuilder::new();
+        args = args.x25519_pubkey([0u8; 32]); // output_owner (Mxe)
+        
+        // Add each position's ciphertext
+        for i in 0..position_count as usize {
+            if i < mixer_pool.position_registry.len() {
+                let pos_ref = &mixer_pool.position_registry[i];
+                // Add position ciphertext (Enc<Shared, MixerPosition>)
+                args = args.encrypted_bytes(pos_ref.position_ciphertext.clone());
+            } else {
+                // Add empty position for padding
+                args = args.encrypted_bytes(Vec::new());
+            }
+        }
+        
+        args = args.plaintext_u16(position_count);
+        let args = args.build();
+
+        // Queue the computation
+        queue_computation(
+            ctx.accounts,
+            computation_offset,
+            args,
+            None,
+            vec![MixPositionsCallback::callback_ix(
+                computation_offset,
+                &ctx.accounts.mxe_account,
+                &[
+                    CallbackAccount { pubkey: ctx.accounts.mixer_pool.key(), is_writable: true },
+                ]
+            )?],
+            1,
+            0,
+        )?;
+
+        Ok(())
+    }
+
+    #[arcium_callback(encrypted_ix = "mix_positions")]
+    pub fn mix_positions_callback(
+        ctx: Context<MixPositionsCallback>,
+        output: SignedComputationOutputs<MixPositionsOutput>,
+    ) -> Result<()> {
+        let MixPositionsOutput {
+            field_0: aggregated_state,
+        } = match output.verify_output(
+            &ctx.accounts.cluster_account,
+            &ctx.accounts.computation_account
+        ) {
+            Ok(result) => result,
+            Err(e) => {
+                msg!("Error: {}", e);
+                return Err(ErrorCode::AbortedComputation.into())
+            },
+        };
+
+        let mixer_pool = &mut ctx.accounts.mixer_pool;
+        
+        // Update aggregated state
+        mixer_pool.aggregated_state_ciphertext = aggregated_state.ciphertexts[0].to_vec();
+        
+        // Update the last mix slot
+        mixer_pool.last_mix_slot = Clock::get()?.slot;
+
+        Ok(())
+    }
+
+    /// Interact with pool: Use aggregated mixer state to interact with liquidity pool
+    /// The pool sees only the net open interest, not individual positions
+    pub fn interact_with_pool(
+        ctx: Context<InteractWithPool>,
+        net_oi: i64,  // Revealed net open interest from aggregated state
+        total_collateral: u128,  // Revealed total collateral
+    ) -> Result<()> {
+        let mixer_pool_mut = &mut ctx.accounts.mixer_pool;
+        let pool = &mut ctx.accounts.pool;
+        
+        // Update revealed metrics in mixer pool
+        mixer_pool_mut.net_open_interest = net_oi;
+        mixer_pool_mut.total_collateral = total_collateral;
+        
+        // Pool interaction logic:
+        // 1. The pool sees only the net open interest (aggregated)
+        // 2. If net_oi > 0: Pool has net long exposure (traders are net long)
+        // 3. If net_oi < 0: Pool has net short exposure (traders are net short)
+        // 4. Pool can adjust its position or use this for risk management
+        
+        // The pool's exposure is the opposite of the net OI:
+        // - If traders are net long (+net_oi), pool is net short
+        // - If traders are net short (-net_oi), pool is net long
+        // This is how peer-to-pool works: pool is the counterparty
+        
+        // In a full implementation, we would:
+        // 1. Calculate pool's required exposure based on net_oi
+        // 2. Update pool's AUM and risk metrics
+        // 3. Apply funding rates based on net_oi
+        // 4. Calculate fees and distribute to LPs
+        // 5. Handle liquidation thresholds for the pool
+        
+        // For now, we just update the mixer pool state
+        // The pool can read mixer_pool.net_open_interest to see aggregate exposure
+        
+        Ok(())
+    }
+
+    /// Decrypt own position: Trader can decrypt their own position from mixer pool
+    pub fn decrypt_own_position(
+        ctx: Context<DecryptOwnPosition>,
+    ) -> Result<Vec<u8>> {
+        let mixer_pool = &ctx.accounts.mixer_pool;
+        
+        // Find trader's position in registry
+        let position_ref = mixer_pool.position_registry.iter()
+            .find(|ref_pos| ref_pos.trader == ctx.accounts.trader.key())
+            .ok_or(ErrorCode::InvalidInput)?;
+        
+        // Return encrypted position (client will decrypt using their key)
+        Ok(position_ref.position_ciphertext.clone())
+    }
+}
+
+// ============================================================================
+// Order Matching DEX Account Contexts
+// ============================================================================
+
+#[derive(Accounts)]
+#[instruction(market_id: u16)]
+pub struct InitializeMarket<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + std::mem::size_of::<MarketState>(),
+        seeds = [b"market", &market_id.to_le_bytes()],
+        bump
+    )]
+    pub market_state: Account<'info, MarketState>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateMarketConfig<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    
+    #[account(mut)]
+    pub market_state: Account<'info, MarketState>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateMarketPrices<'info> {
+    #[account(mut)]
+    pub oracle: Signer<'info>,
+    
+    #[account(mut)]
+    pub market_state: Account<'info, MarketState>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeTraderState<'info> {
+    #[account(mut)]
+    pub trader: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = trader,
+        space = 8 + std::mem::size_of::<TraderState>(),
+        seeds = [b"trader", trader.key().as_ref()],
+        bump
+    )]
+    pub trader_state: Account<'info, TraderState>,
+    
+    #[account(
+        init,
+        payer = trader,
+        space = 8 + 32,  // Simplified for simulation
+        seeds = [b"confidential_account", trader.key().as_ref()],
+        bump
+    )]
+    pub confidential_account: AccountInfo<'info>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct DepositCollateralConfidential<'info> {
+    #[account(mut)]
+    pub trader: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"trader", trader.key().as_ref()],
+        bump = trader_state.bump
+    )]
+    pub trader_state: Account<'info, TraderState>,
+    
+    #[account(mut)]
+    pub trader_token_account: Account<'info, TokenAccount>,
+    
+    #[account(mut)]
+    pub vault_account: Account<'info, TokenAccount>,
+    
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawCollateralConfidential<'info> {
+    #[account(mut)]
+    pub trader: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"trader", trader.key().as_ref()],
+        bump = trader_state.bump
+    )]
+    pub trader_state: Account<'info, TraderState>,
+    
+    #[account(mut)]
+    pub trader_token_account: Account<'info, TokenAccount>,
+    
+    #[account(mut)]
+    pub vault_account: Account<'info, TokenAccount>,
+    
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct SubmitOrder<'info> {
+    #[account(mut)]
+    pub trader: Signer<'info>,
+    
+    #[account(
+        seeds = [b"trader", trader.key().as_ref()],
+        bump = trader_state.bump
+    )]
+    pub trader_state: Account<'info, TraderState>,
+    
+    #[account(
+        mut,
+        seeds = [b"market", &market_state.market_id.to_le_bytes()],
+        bump = market_state.bump
+    )]
+    pub market_state: Account<'info, MarketState>,
+    
+    #[account(
+        mut,
+        init_if_needed,
+        payer = trader,
+        space = 8 + std::mem::size_of::<EpochState>(),
+        seeds = [
+            b"epoch",
+            &market_state.market_id.to_le_bytes(),
+            &market_state.current_epoch_id.to_le_bytes()
+        ],
+        bump
+    )]
+    pub epoch_state: Account<'info, EpochState>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SettleEpoch<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"market", &market_state.market_id.to_le_bytes()],
+        bump = market_state.bump
+    )]
+    pub market_state: Account<'info, MarketState>,
+    
+    #[account(
+        mut,
+        seeds = [
+            b"epoch",
+            &market_state.market_id.to_le_bytes(),
+            &epoch_state.epoch_id.to_le_bytes()
+        ],
+        bump
+    )]
+    pub epoch_state: Account<'info, EpochState>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CancelOrder<'info> {
+    #[account(mut)]
+    pub trader: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"market", &market_state.market_id.to_le_bytes()],
+        bump = market_state.bump
+    )]
+    pub market_state: Account<'info, MarketState>,
+    
+    #[account(
+        mut,
+        seeds = [
+            b"epoch",
+            &market_state.market_id.to_le_bytes(),
+            &epoch_state.epoch_id.to_le_bytes()
+        ],
+        bump
+    )]
+    pub epoch_state: Account<'info, EpochState>,
+}
+
+#[derive(Accounts)]
+pub struct CancelAllOrders<'info> {
+    #[account(mut)]
+    pub trader: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"market", &market_state.market_id.to_le_bytes()],
+        bump = market_state.bump
+    )]
+    pub market_state: Account<'info, MarketState>,
+}
+
+// ============================================================================
+// Mixer Pool Account Contexts
+// ============================================================================
+
+#[derive(Accounts)]
+pub struct InitMixPositionsCompDef<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + std::mem::size_of::<arcium_client::idl::arcium::types::ComputationDefinition>(),
+        seeds = [b"comp_def", b"mix_positions"],
+        bump
+    )]
+    pub computation_definition: Account<'info, arcium_client::idl::arcium::types::ComputationDefinition>,
+    
+    pub system_program: Program<'info, System>,
+    pub arcium_program: Program<'info, arcium_client::idl::arcium::Arcium>,
+}
+
+#[derive(Accounts)]
+#[instruction(market_id: u16)]
+pub struct InitializeMixerPool<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + std::mem::size_of::<MixerPoolState>() + 1000 * std::mem::size_of::<PositionRef>(),
+        seeds = [b"mixer_pool", &market_id.to_le_bytes()],
+        bump
+    )]
+    pub mixer_pool: Account<'info, MixerPoolState>,
+    
+    pub base_asset_mint: Account<'info, Mint>,
+    pub quote_asset_mint: Account<'info, Mint>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SubmitPositionToMixer<'info> {
+    #[account(mut)]
+    pub trader: Signer<'info>,
+    
+    #[account(
+        mut,
+        seeds = [b"mixer_pool", &mixer_pool.market_id.to_le_bytes()],
+        bump = mixer_pool.bump
+    )]
+    pub mixer_pool: Account<'info, MixerPoolState>,
+}
+
+#[derive(Accounts)]
+pub struct MixPositions<'info> {
+    #[account(mut)]
+    pub mixer_pool: Account<'info, MixerPoolState>,
+    
+    #[account(mut)]
+    pub mxe_account: Account<'info, arcium_client::idl::arcium::types::MxeAccount>,
+    
+    #[account(mut)]
+    pub sign_pda_account: Signer<'info>,
+    
+    pub cluster_account: Account<'info, arcium_client::idl::arcium::types::ClusterAccount>,
+    pub computation_account: Account<'info, arcium_client::idl::arcium::types::ComputationAccount>,
+    pub arcium_program: Program<'info, arcium_client::idl::arcium::Arcium>,
+}
+
+#[derive(Accounts)]
+pub struct MixPositionsCallback<'info> {
+    #[account(mut)]
+    pub mixer_pool: Account<'info, MixerPoolState>,
+    
+    pub cluster_account: Account<'info, arcium_client::idl::arcium::types::ClusterAccount>,
+    pub computation_account: Account<'info, arcium_client::idl::arcium::types::ComputationAccount>,
+    pub arcium_program: Program<'info, arcium_client::idl::arcium::Arcium>,
+}
+
+#[derive(Accounts)]
+pub struct InteractWithPool<'info> {
+    #[account(mut)]
+    pub mixer_pool: Account<'info, MixerPoolState>,
+    
+    #[account(mut)]
+    pub pool: Account<'info, Pool>,  // Existing pool account
+}
+
+#[derive(Accounts)]
+pub struct DecryptOwnPosition<'info> {
+    pub trader: Signer<'info>,
+    
+    pub mixer_pool: Account<'info, MixerPoolState>,
+}
+
+// Output types for mix_positions callback
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct MixPositionsOutput {
+    pub field_0: EncryptedOutput,  // Enc<Mxe, AggregatedState>
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct EncryptedOutput {
+    pub ciphertexts: Vec<[u8; 32]>,
+    pub nonce: u128,
+}
+
 #[error_code]
 pub enum ErrorCode {
     #[msg("The computation was aborted")]
@@ -3120,4 +4917,14 @@ pub enum ErrorCode {
     InvalidInput,
     #[msg("Math overflow")]
     MathOverflow,
+    #[msg("Invalid price")]
+    InvalidPrice,
+    #[msg("Market is not active")]
+    MarketNotActive,
+    #[msg("Epoch has already been settled")]
+    EpochAlreadySettled,
+    #[msg("Epoch has not ended yet")]
+    EpochNotEnded,
+    #[msg("Invalid order size")]
+    InvalidOrderSize,
 }

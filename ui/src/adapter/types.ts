@@ -74,6 +74,7 @@ export interface OpenPositionParams {
   pool?: PublicKey;          // Optional pool override
   custody?: PublicKey;       // Optional custody override
   collateralCustody?: PublicKey; // Optional collateral custody override
+  fundingAccount?: PublicKey;    // Token account for collateral (required for public mode)
 }
 
 export interface ClosePositionParams {
@@ -84,11 +85,13 @@ export interface ClosePositionParams {
 export interface AddCollateralParams {
   positionKey: PublicKey;    // Position account
   collateral: anchor.BN;     // Additional collateral to add
+  fundingAccount?: PublicKey; // Token account for collateral (required for public mode)
 }
 
 export interface RemoveCollateralParams {
   positionKey: PublicKey;    // Position account
   collateralUsd: anchor.BN;  // Collateral to remove (in USD)
+  fundingAccount?: PublicKey; // Token account to receive collateral (required for public mode)
 }
 
 export interface LiquidateParams {
@@ -239,4 +242,13 @@ export interface GetOraclePriceParams {
   custodyMint: PublicKey;
   ema?: boolean;
   poolName?: string;
+}
+
+// ============================================================================
+// Adapter Mode
+// ============================================================================
+
+export enum AdapterMode {
+  Private = "private",  // Uses encrypted Arcium MPC methods
+  Public = "public",    // Uses public (non-encrypted) methods
 }

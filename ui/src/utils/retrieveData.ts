@@ -21,8 +21,13 @@ export async function fetchTokenBalance(
   connection: Connection
 ): Promise<number> {
   console.log("fetching user token", payToken);
+  const tokenAddress = getTokenAddress(payToken);
+  if (!tokenAddress) {
+    console.warn(`No address found for token: ${payToken}`);
+    return 0;
+  }
   let tokenATA = await getAssociatedTokenAddress(
-    new PublicKey(getTokenAddress(payToken)),
+    new PublicKey(tokenAddress),
     publicKey
   );
   let balance = 0;

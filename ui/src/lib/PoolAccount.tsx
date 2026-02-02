@@ -90,6 +90,7 @@ export class PoolAccount {
       .map((custody) => {
         return custody?.getTokenE();
       })
+      .filter((token): token is TokenE => token !== null && token !== undefined)
       .filter((token) => {
         return !exclude || !exclude.includes(token);
       });

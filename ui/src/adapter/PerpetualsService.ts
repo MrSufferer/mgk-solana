@@ -20,6 +20,7 @@ import {
   GetSwapAmountAndFeesResult,
   LiquidityAmountAndFee,
   AdapterConfig,
+  AdapterMode,
 } from './types';
 import { PublicKey } from '@solana/web3.js';
 import * as anchor from '@coral-xyz/anchor';
@@ -27,6 +28,7 @@ import * as anchor from '@coral-xyz/anchor';
 export class PerpetualsService {
   private adapter: PerpetualsAdapter;
   private initialized: boolean = false;
+  private mode: AdapterMode;
 
   constructor(
     program: anchor.Program,
@@ -34,7 +36,8 @@ export class PerpetualsService {
     defaultPool?: PublicKey,
     defaultCustody?: PublicKey,
     defaultCollateralCustody?: PublicKey,
-    clusterOffset?: number
+    clusterOffset?: number,
+    mode?: AdapterMode
   ) {
     const config: AdapterConfig = {
       program,
@@ -43,7 +46,23 @@ export class PerpetualsService {
       defaultCustody,
       defaultCollateralCustody,
     };
-    this.adapter = new PerpetualsAdapter({ ...config, clusterOffset });
+    this.mode = mode || AdapterMode.Private;
+    this.adapter = new PerpetualsAdapter({ ...config, clusterOffset, mode: this.mode });
+  }
+
+  /**
+   * Set the adapter mode (public or private)
+   */
+  setMode(mode: AdapterMode): void {
+    this.mode = mode;
+    this.adapter.setMode(mode);
+  }
+
+  /**
+   * Get the current adapter mode
+   */
+  getMode(): AdapterMode {
+    return this.mode;
   }
 
   async initialize(): Promise<void> {

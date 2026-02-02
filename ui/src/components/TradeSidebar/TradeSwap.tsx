@@ -70,34 +70,43 @@ export function TradeSwap(props: Props) {
         return;
       }
       setPendingRateConversion(true);
-      let { provider } = await getPerpetualProgramAndProvider(wallet as any);
+      
+      try {
+        let { provider } = await getPerpetualProgramAndProvider(wallet as any);
 
-      const View = new ViewHelper(connection, provider);
-      console.log("trying to get swap amt", payToken, receiveToken, payAmount);
+        const View = new ViewHelper(connection, provider);
+        console.log("trying to get swap amt", payToken, receiveToken, payAmount);
 
-      let payCustody = pool!.getCustodyAccount(payToken)!;
-      let receiveCustody = pool!.getCustodyAccount(receiveToken)!;
+        let payCustody = pool!.getCustodyAccount(payToken)!;
+        let receiveCustody = pool!.getCustodyAccount(receiveToken)!;
 
-      let swapInfo = await View.getSwapAmountAndFees(
-        payAmount,
-        pool!,
-        payCustody,
-        receiveCustody
-      );
+        let swapInfo = await View.getSwapAmountAndFees(
+          payAmount,
+          pool!,
+          payCustody,
+          receiveCustody
+        );
 
-      let f =
-        Number(swapInfo.feeIn.add(swapInfo.feeOut)) /
-        10 ** receiveCustody.decimals;
+        let f =
+          Number(swapInfo.feeIn.add(swapInfo.feeOut)) /
+          10 ** receiveCustody.decimals;
 
-      let recAmt =
-        Number(swapInfo.amountOut) / 10 ** receiveCustody.decimals - f;
+        let recAmt =
+          Number(swapInfo.amountOut) / 10 ** receiveCustody.decimals - f;
 
-      console.log("f and rec", f, recAmt);
-      // TODO check the fees here
-      setReceiveAmount(recAmt);
-      setPendingRateConversion(false);
-
-      setFee(f);
+        console.log("f and rec", f, recAmt);
+        // TODO check the fees here
+        setReceiveAmount(recAmt);
+        setFee(f);
+      } catch (error) {
+        // Silently handle errors during user input - simulation may fail for invalid amounts
+        console.debug("Failed to fetch swap amount and fees:", error);
+        // Reset values to prevent showing stale data
+        setReceiveAmount(0);
+        setFee(0);
+      } finally {
+        setPendingRateConversion(false);
+      }
     }
 
     if (pool) {

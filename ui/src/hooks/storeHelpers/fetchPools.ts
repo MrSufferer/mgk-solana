@@ -24,14 +24,6 @@ export async function getPoolData(
     Object.values(fetchedPools)
       .sort((a, b) => a.account.name.localeCompare(b.account.name))
       .map(async (pool: FetchPool, idx: number) => {
-        // Skip pools at indices 0 and 1 (DevPool and DevPool1)
-        if (idx < 2) {
-          console.warn(
-            `Skipping pool ${pool.account.name} at index ${idx} (only processing from index 2 onwards)`
-          );
-          return;
-        }
-
         const lpTokenMint = PublicKey.findProgramAddressSync(
           [Buffer.from("lp_token_mint"), pool.publicKey.toBuffer()],
           perpetual_program.programId

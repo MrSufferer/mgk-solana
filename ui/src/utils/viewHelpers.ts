@@ -100,7 +100,11 @@ export class ViewHelper {
       // console.log("coder.decode(returnData); ::: ", coder.decode(returnData));
       return coder.decode(returnData);
     } else {
-      throw new Error(`No Logs Found `, { cause: data });
+      // Provide more context about why logs weren't found
+      const errorMsg = data.value.err 
+        ? `Transaction simulation failed: ${JSON.stringify(data.value.err)}`
+        : `No logs found in simulation response`;
+      throw new Error(errorMsg, { cause: data });
     }
   }
 

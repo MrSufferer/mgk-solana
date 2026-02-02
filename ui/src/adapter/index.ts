@@ -5,6 +5,7 @@
  */
 
 export { PerpetualsAdapter } from "./PerpetualsAdapter";
+export { AdapterMode } from "./types";
 export { PerpetualsService } from "./PerpetualsService";
 export * from "./types";
 export * from "./encryption";

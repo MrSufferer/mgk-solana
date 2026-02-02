@@ -26,7 +26,7 @@ import {
   getClusterAccAddress,
   buildFinalizeCompDefTx,
   getArciumAccountBaseSeed,
-  getArciumProgAddress,
+  getArciumProgramId,
 } from "@arcium-hq/client";
 
 import {
@@ -53,6 +53,7 @@ import {
   PnlResult,
   LiquidationPriceResult,
   LiquidationStateResult,
+  AdapterMode,
 } from "./types";
 
 import {
@@ -77,8 +78,9 @@ export class PerpetualsAdapter {
   private defaultCustody?: PublicKey;
   private defaultCollateralCustody?: PublicKey;
   private clusterOffset?: number; // For devnet configuration
+  private mode: AdapterMode;
 
-  constructor(config: AdapterConfig & { clusterOffset?: number }) {
+  constructor(config: AdapterConfig & { clusterOffset?: number; mode?: AdapterMode }) {
     this.program = config.program;
     this.provider = config.provider;
     this.encryptionContext = config.encryptionContext;
@@ -86,43 +88,66 @@ export class PerpetualsAdapter {
     this.defaultCustody = config.defaultCustody;
     this.defaultCollateralCustody = config.defaultCollateralCustody;
     this.clusterOffset = config.clusterOffset;
+    this.mode = config.mode || AdapterMode.Private;
+  }
+
+  /**
+   * Set the adapter mode (public or private)
+   */
+  setMode(mode: AdapterMode): void {
+    this.mode = mode;
+  }
+
+  /**
+   * Get the current adapter mode
+   */
+  getMode(): AdapterMode {
+    return this.mode;
   }
 
   /**
    * Initialize the adapter - must be called before any trading operations
    */
   async initialize(): Promise<void> {
-    if (!this.encryptionContext) {
+    // Only initialize encryption context for private mode
+    if (this.mode === AdapterMode.Private && !this.encryptionContext) {
       console.log("[Adapter] Initializing encryption context...");
       this.encryptionContext = await initializeEncryption(
         this.provider,
         this.program.programId
       );
       console.log("[Adapter] Encryption context initialized");
+    } else if (this.mode === AdapterMode.Public) {
+      console.log("[Adapter] Public mode - skipping encryption context initialization");
     }
   }
 
   /**
-   * Ensure encryption context is initialized
+   * Ensure encryption context is initialized (only for private mode)
    */
   private async ensureInitialized(): Promise<void> {
-    if (!this.encryptionContext) {
+    if (this.mode === AdapterMode.Private && !this.encryptionContext) {
       await this.initialize();
     }
   }
 
   /**
-   * Check and initialize computation definition if needed
+   * Check and initialize computation definition if needed (only for private mode)
    * Returns true if initialized (or already was), false if initialization failed
    */
   private async ensureCompDefInitialized(compDefName: string): Promise<boolean> {
+    // Computation definitions are only needed for private mode
+    if (this.mode === AdapterMode.Public) {
+      return true; // Skip for public mode
+    }
+
     const baseSeedCompDefAcc = getArciumAccountBaseSeed(
       "ComputationDefinitionAccount"
     );
     const offset = getCompDefAccOffset(compDefName);
     const compDefAcc = PublicKey.findProgramAddressSync(
       [baseSeedCompDefAcc, this.program.programId.toBuffer(), offset],
-      getArciumProgAddress()
+      getArciumProgramId()
     )[0];
 
     // Check if already initialized
@@ -130,9 +155,15 @@ export class PerpetualsAdapter {
       await this.program.account.computationDefinitionAccount.fetch(compDefAcc);
       console.log(`[Adapter] ${compDefName} comp def already initialized`);
       return true;
-    } catch (e) {
-      // Not initialized, proceed to initialize
-      console.log(`[Adapter] ${compDefName} comp def not found, attempting to initialize...`);
+    } catch (e: any) {
+      // If account doesn't exist, that's expected - we'll initialize it
+      if (e.message?.includes("Account does not exist") || e.message?.includes("has no data")) {
+        console.log(`[Adapter] ${compDefName} comp def not found, attempting to initialize...`);
+      } else {
+        // Re-throw unexpected errors
+        console.error(`[Adapter] Error checking ${compDefName} comp def:`, e);
+        throw e;
+      }
     }
 
     // Initialize comp def based on name
@@ -219,6 +250,10 @@ export class PerpetualsAdapter {
    * @returns Transaction result with position key
    */
   async openPosition(params: OpenPositionParams): Promise<TransactionResult> {
+    if (this.mode === AdapterMode.Public) {
+      return this.openPositionPublic(params);
+    }
+    
     await this.ensureInitialized();
     
     // Try to ensure computation definition is initialized
@@ -270,14 +305,15 @@ export class PerpetualsAdapter {
       const computationOffset = generateComputationOffset();
 
       // Get Arcium account addresses
+      const arciumEnv = getArciumEnv();
       const computationAccount = getComputationAccAddress(
-        this.program.programId,
+        arciumEnv.arciumClusterOffset,
         computationOffset
       );
       const clusterAccount = this.getClusterAccount();
       const mxeAccount = getMXEAccAddress(this.program.programId);
-      const mempoolAccount = getMempoolAccAddress(this.program.programId);
-      const executingPool = getExecutingPoolAccAddress(this.program.programId);
+      const mempoolAccount = getMempoolAccAddress(arciumEnv.arciumClusterOffset);
+      const executingPool = getExecutingPoolAccAddress(arciumEnv.arciumClusterOffset);
       const compDefAccOffset = getCompDefAccOffset("open_position");
       const compDefAccount = getCompDefAccAddress(
         this.program.programId,
@@ -348,6 +384,10 @@ export class PerpetualsAdapter {
    * @returns Transaction result
    */
   async closePosition(params: ClosePositionParams): Promise<TransactionResult> {
+    if (this.mode === AdapterMode.Public) {
+      return this.closePositionPublic(params);
+    }
+    
     await this.ensureInitialized();
 
     try {
@@ -363,14 +403,15 @@ export class PerpetualsAdapter {
       const computationOffset = generateComputationOffset();
 
       // Get Arcium account addresses
+      const arciumEnv = getArciumEnv();
       const computationAccount = getComputationAccAddress(
-        this.program.programId,
+        arciumEnv.arciumClusterOffset,
         computationOffset
       );
       const clusterAccount = this.getClusterAccount();
       const mxeAccount = getMXEAccAddress(this.program.programId);
-      const mempoolAccount = getMempoolAccAddress(this.program.programId);
-      const executingPool = getExecutingPoolAccAddress(this.program.programId);
+      const mempoolAccount = getMempoolAccAddress(arciumEnv.arciumClusterOffset);
+      const executingPool = getExecutingPoolAccAddress(arciumEnv.arciumClusterOffset);
       const compDefAccount = getCompDefAccAddress(
         this.program.programId,
         Buffer.from(getCompDefAccOffset("close_position")).readUInt32LE()
@@ -431,6 +472,10 @@ export class PerpetualsAdapter {
    * @returns Transaction result
    */
   async addCollateral(params: AddCollateralParams): Promise<TransactionResult> {
+    if (this.mode === AdapterMode.Public) {
+      return this.addCollateralPublic(params);
+    }
+    
     await this.ensureInitialized();
 
     try {
@@ -454,14 +499,15 @@ export class PerpetualsAdapter {
       const computationOffset = generateComputationOffset();
 
       // Get Arcium account addresses
+      const arciumEnv = getArciumEnv();
       const computationAccount = getComputationAccAddress(
-        this.program.programId,
+        arciumEnv.arciumClusterOffset,
         computationOffset
       );
       const clusterAccount = this.getClusterAccount();
       const mxeAccount = getMXEAccAddress(this.program.programId);
-      const mempoolAccount = getMempoolAccAddress(this.program.programId);
-      const executingPool = getExecutingPoolAccAddress(this.program.programId);
+      const mempoolAccount = getMempoolAccAddress(arciumEnv.arciumClusterOffset);
+      const executingPool = getExecutingPoolAccAddress(arciumEnv.arciumClusterOffset);
       const compDefAccount = getCompDefAccAddress(
         this.program.programId,
         Buffer.from(getCompDefAccOffset("add_collateral")).readUInt32LE()
@@ -523,6 +569,10 @@ export class PerpetualsAdapter {
    * @returns Transaction result
    */
   async removeCollateral(params: RemoveCollateralParams): Promise<TransactionResult> {
+    if (this.mode === AdapterMode.Public) {
+      return this.removeCollateralPublic(params);
+    }
+    
     await this.ensureInitialized();
 
     try {
@@ -546,14 +596,15 @@ export class PerpetualsAdapter {
       const computationOffset = generateComputationOffset();
 
       // Get Arcium account addresses
+      const arciumEnv = getArciumEnv();
       const computationAccount = getComputationAccAddress(
-        this.program.programId,
+        arciumEnv.arciumClusterOffset,
         computationOffset
       );
       const clusterAccount = this.getClusterAccount();
       const mxeAccount = getMXEAccAddress(this.program.programId);
-      const mempoolAccount = getMempoolAccAddress(this.program.programId);
-      const executingPool = getExecutingPoolAccAddress(this.program.programId);
+      const mempoolAccount = getMempoolAccAddress(arciumEnv.arciumClusterOffset);
+      const executingPool = getExecutingPoolAccAddress(arciumEnv.arciumClusterOffset);
       const compDefAccount = getCompDefAccAddress(
         this.program.programId,
         Buffer.from(getCompDefAccOffset("remove_collateral")).readUInt32LE()
@@ -615,6 +666,10 @@ export class PerpetualsAdapter {
    * @returns Transaction result
    */
   async liquidate(params: LiquidateParams): Promise<TransactionResult> {
+    if (this.mode === AdapterMode.Public) {
+      return this.liquidatePublic(params);
+    }
+    
     await this.ensureInitialized();
 
     try {
@@ -630,14 +685,15 @@ export class PerpetualsAdapter {
       const computationOffset = generateComputationOffset();
 
       // Get Arcium account addresses
+      const arciumEnv = getArciumEnv();
       const computationAccount = getComputationAccAddress(
-        this.program.programId,
+        arciumEnv.arciumClusterOffset,
         computationOffset
       );
       const clusterAccount = this.getClusterAccount();
       const mxeAccount = getMXEAccAddress(this.program.programId);
-      const mempoolAccount = getMempoolAccAddress(this.program.programId);
-      const executingPool = getExecutingPoolAccAddress(this.program.programId);
+      const mempoolAccount = getMempoolAccAddress(arciumEnv.arciumClusterOffset);
+      const executingPool = getExecutingPoolAccAddress(arciumEnv.arciumClusterOffset);
       const compDefAccount = getCompDefAccAddress(
         this.program.programId,
         Buffer.from(getCompDefAccOffset("liquidate")).readUInt32LE()
@@ -1176,6 +1232,380 @@ export class PerpetualsAdapter {
   }
 
   // ============================================================================
+  // PUBLIC MODE METHODS (Non-encrypted)
+  // ============================================================================
+
+  /**
+   * Open a public (non-encrypted) position
+   */
+  private async openPositionPublic(params: OpenPositionParams): Promise<TransactionResult> {
+    try {
+      console.log("\n[Adapter] Opening public position...");
+      console.log("  Side:", params.side === PositionSide.Long ? "Long" : "Short");
+      console.log("  Entry Price:", params.price.toString());
+      console.log("  Size (USD):", params.size.toString());
+      console.log("  Collateral (USD):", params.collateral.toString());
+
+      // Generate position ID
+      const positionId = new anchor.BN(Date.now());
+      const positionIdBuffer = Buffer.alloc(8);
+      positionIdBuffer.writeBigUInt64LE(BigInt(positionId.toString()));
+
+      // Derive position PDA
+      const [positionPDA] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("position"),
+          this.provider.wallet.publicKey.toBuffer(),
+          positionIdBuffer
+        ],
+        this.program.programId
+      );
+
+      // Convert side to number (0 = Long, 1 = Short)
+      const side = params.side === PositionSide.Long ? 0 : 1;
+
+      // Get accounts
+      const perpetualsAccount = this.getPerpetualsPDA();
+      const pool = params.pool || this.defaultPool;
+      const custody = params.custody || this.defaultCustody;
+      const collateralCustody = params.collateralCustody || this.defaultCollateralCustody;
+
+      if (!pool || !custody || !collateralCustody) {
+        throw new Error("Missing required accounts: pool, custody, or collateralCustody");
+      }
+
+      // Fetch custody accounts to get oracle accounts
+      const custodyAccount = await this.program.account.custody.fetch(custody) as any;
+      const collateralCustodyAccount = await this.program.account.custody.fetch(collateralCustody) as any;
+
+      // Get funding account (user's token account for collateral)
+      if (!params.fundingAccount) {
+        throw new Error("fundingAccount is required for public mode");
+      }
+      const fundingAccount = params.fundingAccount;
+
+      // Get collateral custody token account
+      const collateralCustodyTokenAccount = PublicKey.findProgramAddressSync(
+        [Buffer.from("custody_token_account"), pool.toBuffer(), collateralCustodyAccount.mint.toBuffer()],
+        this.program.programId
+      )[0];
+
+      console.log("  Sending transaction...");
+      const signature = await this.program.methods
+        .openPositionPublic(positionId, {
+          price: params.price,
+          collateral: params.collateral,
+          size: params.size,
+          side: side,
+        })
+        .accountsPartial({
+          owner: this.provider.wallet.publicKey,
+          fundingAccount: fundingAccount,
+          perpetuals: perpetualsAccount,
+          pool: pool,
+          position: positionPDA,
+          custody: custody,
+          custodyOracleAccount: custodyAccount.oracle.oracleAccount,
+          collateralCustody: collateralCustody,
+          collateralCustodyOracleAccount: collateralCustodyAccount.oracle.oracleAccount,
+          collateralCustodyTokenAccount: collateralCustodyTokenAccount,
+        })
+        .rpc({ commitment: "confirmed" });
+
+      console.log("  Transaction signature:", signature);
+      console.log("  Position opened successfully!");
+      console.log("  Position PDA:", positionPDA.toBase58());
+
+      return {
+        signature,
+        positionKey: positionPDA,
+        success: true,
+      };
+    } catch (error) {
+      console.error("[Adapter] Error opening public position:", error);
+      return {
+        signature: "",
+        success: false,
+        error: (error as Error).message,
+      };
+    }
+  }
+
+  /**
+   * Close a public (non-encrypted) position
+   */
+  private async closePositionPublic(params: ClosePositionParams): Promise<TransactionResult> {
+    try {
+      console.log("\n[Adapter] Closing public position...");
+      console.log("  Position:", params.positionKey.toBase58());
+
+      // Fetch position to get position ID
+      const position = await this.program.account.position.fetch(
+        params.positionKey
+      ) as any;
+
+      // Get accounts
+      const perpetualsAccount = this.getPerpetualsPDA();
+      const pool = this.defaultPool;
+      const custody = this.defaultCustody;
+      const collateralCustody = this.defaultCollateralCustody;
+
+      if (!pool || !custody || !collateralCustody) {
+        throw new Error("Missing required accounts: pool, custody, or collateralCustody");
+      }
+
+      // Fetch custody accounts to get oracle accounts
+      const custodyAccount = await this.program.account.custody.fetch(custody) as any;
+      const collateralCustodyAccount = await this.program.account.custody.fetch(collateralCustody) as any;
+
+      console.log("  Sending transaction...");
+      const signature = await (this.program as any).methods
+        .closePositionPublic(position.positionId)
+        .accountsPartial({
+          owner: this.provider.wallet.publicKey,
+          perpetuals: perpetualsAccount,
+          pool: pool,
+          position: params.positionKey,
+          custody: custody,
+          custodyOracleAccount: custodyAccount.oracle.oracleAccount,
+          collateralCustody: collateralCustody,
+          collateralCustodyOracleAccount: collateralCustodyAccount.oracle.oracleAccount,
+        })
+        .rpc({ commitment: "confirmed" });
+
+      console.log("  Transaction signature:", signature);
+      console.log("  Position closed successfully!");
+
+      return {
+        signature,
+        success: true,
+      };
+    } catch (error) {
+      console.error("[Adapter] Error closing public position:", error);
+      return {
+        signature: "",
+        success: false,
+        error: (error as Error).message,
+      };
+    }
+  }
+
+  /**
+   * Add collateral to a public position
+   */
+  private async addCollateralPublic(params: AddCollateralParams): Promise<TransactionResult> {
+    try {
+      console.log("\n[Adapter] Adding collateral to public position...");
+      console.log("  Position:", params.positionKey.toBase58());
+      console.log("  Collateral (USD):", params.collateral.toString());
+
+      // Fetch position to get position ID
+      const position = await this.program.account.position.fetch(
+        params.positionKey
+      ) as any;
+
+      // Get accounts
+      const perpetualsAccount = this.getPerpetualsPDA();
+      const pool = this.defaultPool;
+      const custody = this.defaultCustody;
+      const collateralCustody = this.defaultCollateralCustody;
+
+      if (!pool || !custody || !collateralCustody) {
+        throw new Error("Missing required accounts: pool, custody, or collateralCustody");
+      }
+
+      // Fetch custody accounts
+      const custodyAccount = await this.program.account.custody.fetch(custody) as any;
+      const collateralCustodyAccount = await this.program.account.custody.fetch(collateralCustody) as any;
+
+      // Get funding account and token account
+      if (!params.fundingAccount) {
+        throw new Error("fundingAccount is required for public mode");
+      }
+      const fundingAccount = params.fundingAccount;
+      const collateralCustodyTokenAccount = PublicKey.findProgramAddressSync(
+        [Buffer.from("custody_token_account"), pool.toBuffer(), collateralCustodyAccount.mint.toBuffer()],
+        this.program.programId
+      )[0];
+
+      console.log("  Sending transaction...");
+      const signature = await (this.program as any).methods
+        .addCollateralPublic(position.positionId, {
+          collateral: params.collateral,
+        })
+        .accountsPartial({
+          owner: this.provider.wallet.publicKey,
+          fundingAccount: fundingAccount,
+          perpetuals: perpetualsAccount,
+          pool: pool,
+          position: params.positionKey,
+          custody: custody,
+          custodyOracleAccount: custodyAccount.oracle.oracleAccount,
+          collateralCustody: collateralCustody,
+          collateralCustodyOracleAccount: collateralCustodyAccount.oracle.oracleAccount,
+          collateralCustodyTokenAccount: collateralCustodyTokenAccount,
+        })
+        .rpc({ commitment: "confirmed" });
+
+      console.log("  Transaction signature:", signature);
+      console.log("  Collateral added successfully!");
+
+      return {
+        signature,
+        success: true,
+      };
+    } catch (error) {
+      console.error("[Adapter] Error adding collateral to public position:", error);
+      return {
+        signature: "",
+        success: false,
+        error: (error as Error).message,
+      };
+    }
+  }
+
+  /**
+   * Remove collateral from a public position
+   */
+  private async removeCollateralPublic(params: RemoveCollateralParams): Promise<TransactionResult> {
+    try {
+      console.log("\n[Adapter] Removing collateral from public position...");
+      console.log("  Position:", params.positionKey.toBase58());
+      console.log("  Collateral (USD):", params.collateralUsd.toString());
+
+      // Fetch position to get position ID
+      const position = await this.program.account.position.fetch(
+        params.positionKey
+      ) as any;
+
+      // Get accounts
+      const perpetualsAccount = this.getPerpetualsPDA();
+      const pool = this.defaultPool;
+      const custody = this.defaultCustody;
+      const collateralCustody = this.defaultCollateralCustody;
+
+      if (!pool || !custody || !collateralCustody) {
+        throw new Error("Missing required accounts: pool, custody, or collateralCustody");
+      }
+
+      // Fetch custody accounts
+      const custodyAccount = await this.program.account.custody.fetch(custody) as any;
+      const collateralCustodyAccount = await this.program.account.custody.fetch(collateralCustody) as any;
+
+      // Get funding account and token account
+      if (!params.fundingAccount) {
+        throw new Error("fundingAccount is required for public mode");
+      }
+      const fundingAccount = params.fundingAccount;
+      const collateralCustodyTokenAccount = PublicKey.findProgramAddressSync(
+        [Buffer.from("custody_token_account"), pool.toBuffer(), collateralCustodyAccount.mint.toBuffer()],
+        this.program.programId
+      )[0];
+
+      console.log("  Sending transaction...");
+      const signature = await (this.program as any).methods
+        .removeCollateralPublic(position.positionId, {
+          collateral: params.collateralUsd,
+        })
+        .accountsPartial({
+          owner: this.provider.wallet.publicKey,
+          fundingAccount: fundingAccount,
+          perpetuals: perpetualsAccount,
+          pool: pool,
+          position: params.positionKey,
+          custody: custody,
+          custodyOracleAccount: custodyAccount.oracle.oracleAccount,
+          collateralCustody: collateralCustody,
+          collateralCustodyOracleAccount: collateralCustodyAccount.oracle.oracleAccount,
+          collateralCustodyTokenAccount: collateralCustodyTokenAccount,
+        })
+        .rpc({ commitment: "confirmed" });
+
+      console.log("  Transaction signature:", signature);
+      console.log("  Collateral removed successfully!");
+
+      return {
+        signature,
+        success: true,
+      };
+    } catch (error) {
+      console.error("[Adapter] Error removing collateral from public position:", error);
+      return {
+        signature: "",
+        success: false,
+        error: (error as Error).message,
+      };
+    }
+  }
+
+  /**
+   * Liquidate a public position
+   */
+  private async liquidatePublic(params: LiquidateParams): Promise<TransactionResult> {
+    try {
+      console.log("\n[Adapter] Liquidating public position...");
+      console.log("  Position:", params.positionKey.toBase58());
+
+      // Fetch position to get position ID
+      const position = await this.program.account.position.fetch(
+        params.positionKey
+      ) as any;
+
+      // Get accounts
+      const perpetualsAccount = this.getPerpetualsPDA();
+      const pool = this.defaultPool;
+      const custody = this.defaultCustody;
+      const collateralCustody = this.defaultCollateralCustody;
+
+      if (!pool || !custody || !collateralCustody) {
+        throw new Error("Missing required accounts: pool, custody, or collateralCustody");
+      }
+
+      // Fetch custody accounts
+      const custodyAccount = await this.program.account.custody.fetch(custody) as any;
+      const collateralCustodyAccount = await this.program.account.custody.fetch(collateralCustody) as any;
+
+      // Get token account
+      const collateralCustodyTokenAccount = PublicKey.findProgramAddressSync(
+        [Buffer.from("custody_token_account"), pool.toBuffer(), collateralCustodyAccount.mint.toBuffer()],
+        this.program.programId
+      )[0];
+
+      console.log("  Sending transaction...");
+      const signature = await (this.program as any).methods
+        .liquidatePublic(position.positionId)
+        .accountsPartial({
+          owner: position.owner,
+          liquidator: this.provider.wallet.publicKey,
+          perpetuals: perpetualsAccount,
+          pool: pool,
+          position: params.positionKey,
+          custody: custody,
+          custodyOracleAccount: custodyAccount.oracle.oracleAccount,
+          collateralCustody: collateralCustody,
+          collateralCustodyOracleAccount: collateralCustodyAccount.oracle.oracleAccount,
+          collateralCustodyTokenAccount: collateralCustodyTokenAccount,
+        })
+        .rpc({ commitment: "confirmed" });
+
+      console.log("  Transaction signature:", signature);
+      console.log("  Position liquidated successfully!");
+
+      return {
+        signature,
+        success: true,
+      };
+    } catch (error) {
+      console.error("[Adapter] Error liquidating public position:", error);
+      return {
+        signature: "",
+        success: false,
+        error: (error as Error).message,
+      };
+    }
+  }
+
+  // ============================================================================
   // HELPER METHODS
   // ============================================================================
 
@@ -1201,7 +1631,7 @@ export class PerpetualsAdapter {
     }
     // Otherwise, use local testing environment
     const arciumEnv = getArciumEnv();
-    return arciumEnv.arciumClusterPubkey;
+    return getClusterAccAddress(arciumEnv.arciumClusterOffset);
   }
 
   /**
